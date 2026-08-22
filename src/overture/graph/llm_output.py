@@ -34,6 +34,21 @@ class ExtractedSignal(BaseModel):
 _CODE_FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 
 
+def strip_code_fences(raw_text: str) -> str:
+    """Remove a leading/trailing ```json (or bare ```) fence, if present.
+
+    Shared by parse_signals_response below and by classify_scope in
+    nodes.py -- both parse a raw model completion as JSON, and both
+    need this. Originally only the former had it; the latter's
+    omission is exactly what caused a real 39-item scope-classification
+    batch to fail to parse against live Claude output (the model
+    fenced its response, json.loads on the raw text threw, and the
+    conservative fallback silently marked every item
+    needs_clarification). See decisions.md D-0014.
+    """
+    return _CODE_FENCE.sub("", raw_text.strip()).strip()
+
+
 def parse_signals_response(raw_text: str) -> list[ExtractedSignal]:
     """Parse the model's raw completion into a list of ExtractedSignal.
 
@@ -43,7 +58,7 @@ def parse_signals_response(raw_text: str) -> list[ExtractedSignal]:
     not coerced. A malformed item is exactly the kind of thing that
     should not survive into a Requirement.
     """
-    cleaned = _CODE_FENCE.sub("", raw_text.strip()).strip()
+    cleaned = strip_code_fences(raw_text)
     try:
         raw_items = json.loads(cleaned)
     except json.JSONDecodeError:

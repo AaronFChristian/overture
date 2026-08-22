@@ -1,0 +1,21 @@
+Discovery call — Coastal Trust Credit Union, transaction review workflow
+
+Tell me about how your fraud review team spends their day right now.
+
+We flag around 300 transactions a day for manual review across debit disputes and wire transfers. Analysts have to pull up three different systems — the core banking platform, our case management tool, and a separate sanctions screening tool — just to make a single decision on one transaction. It's slow, and during a fraud spike we fall behind and disputes age past our regulatory response window.
+
+That's a costly bottleneck. What regulatory constraints are shaping what you can build here?
+
+We're subject to BSA and OFAC requirements, so any tool touching transaction data needs a full audit trail — every decision, every override, timestamped and attributable to a specific analyst. Nothing can auto-approve or auto-deny a transaction outright; a human has to make the final call, we just want the evidence gathered and presented faster. And this all has to run inside our existing on-prem data center, nothing in the core banking data can go to a public cloud region we haven't already approved.
+
+If this went well, what would change for your team?
+
+I'd want an analyst to open one case and see the transaction, the customer's history, and the relevant sanctions screening result already pulled together, with a plain-language summary of why it was flagged. Right now that's fifteen minutes of clicking between systems before they even start deciding. Get that down to two minutes and we've solved the backlog.
+
+Anything explicitly off the table for a first version?
+
+Don't touch wire transfers above fifty thousand dollars — those go through a completely different escalation path with our correspondent bank and legal has very specific rules about that tier. Start with the debit card disputes, that's the bulk of the volume and the lowest risk to experiment on.
+
+Good to know. Any other systems in play we should be aware of?
+
+We also have a separate small-business lending arm, Coastal Business Capital, but that's a different core system entirely and a different regulatory regime. Not part of this conversation.

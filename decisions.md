@@ -340,3 +340,169 @@ Revisit:  If batch sizes grow large enough to risk the single
           response exceeding a reasonable token budget, consider
           chunking into multiple batched calls rather than reverting
           to per-item calls.
+
+---
+
+## D-0013 — CLI entry point before an HTTP route
+
+Date: 2026-08-22 · Session 4 · Status: accepted
+
+Context:  Sessions 1-3 built the extraction graph and persistence
+          model, but nothing had ever called them with a real
+          provider or a real database yet. Something had to be the
+          first real entry point.
+Decision: `overture extract <transcript.txt>`, a CLI command (wired
+          via `[project.scripts]` in pyproject.toml), not a FastAPI
+          route.
+Why:      This is specifically the moment the project needs to prove
+          real Claude output survives contact with
+          `parse_signals_response()` and `locate_span()` — code that
+          has, so far, only ever seen a scripted fake. A CLI prints
+          every extracted requirement with its source quote directly
+          to the terminal on every run, which makes a bad extraction
+          immediately visible without needing to inspect a JSON
+          response or attach a debugger. It also matches how this
+          project has been verified from session 1 onward — real
+          terminal output, pasted back, checked line by line — rather
+          than introducing a new verification surface (curl, an HTTP
+          client, a running server) for what's fundamentally a
+          one-shot diagnostic step.
+Rejected: A FastAPI route (`POST /api/v1/sessions/{id}/extract`) —
+          this is still coming, it's the natural session 6 runtime
+          entry point once a demo needs to serve prospects over HTTP.
+          Building it now, before a single real Claude call has been
+          made, would mean debugging two new things at once (the live
+          API behavior AND the route/request-handling code) instead
+          of one.
+Revisit:  Session 6, when the demo runtime needs an HTTP-facing
+          extraction trigger. The CLI doesn't get deleted at that
+          point — it stays as the fast local diagnostic path.
+
+---
+
+## D-0014 — real bug found via live API: classify_scope missing code-fence stripping
+
+Date: 2026-08-22 · Session 4 (post-hoc, found via Aaron's first live run) · Status: fixed
+
+Context:  Aaron's first real `overture extract` run against live
+          Claude, on the manufacturing transcript, extracted 39
+          genuinely correct requirements with verbatim, traceable
+          source quotes — the extraction side worked perfectly. But
+          all 39 came back scope-classified as `needs_clarification`,
+          which is not a plausible real result for that transcript.
+          Root cause: `parse_signals_response()` in llm_output.py
+          strips ```json code fences before parsing, but
+          `make_classify_scope()`'s parsing in nodes.py never got the
+          same treatment — it called `json.loads()` on the raw
+          response. Claude wrapped the 39-item scope response in a
+          code fence (far more likely at that batch size than in the
+          small 3-item fake-provider test fixtures), `json.loads`
+          threw, and D-0012's conservative mismatch fallback silently
+          absorbed the failure — technically working as designed, but
+          masking a real parsing bug behind a safety net meant for a
+          different failure mode (wrong item count, not unparseable
+          JSON).
+Decision: Extracted the fence-stripping regex into a shared
+          `strip_code_fences()` function in llm_output.py, used by
+          both `parse_signals_response` and `classify_scope`. Added a
+          regression test with a fenced FakeProvider scope response,
+          and proved it fails against the pre-fix code before
+          confirming it passes against the fix (not just written and
+          assumed correct).
+Why:      This is exactly the class of bug a fake provider can never
+          surface on its own — every existing test fixture returned
+          hand-written, unwrapped JSON because that's what the test
+          author typed. It took a real, live Claude call to expose
+          the gap between "what we assumed the model would return"
+          and "what it actually returns at a batch size the fake
+          tests never exercised." This is the concrete payoff of
+          D-0013 (CLI before route, so real-API testing happens early
+          and cheaply) — the bug surfaced on the very first live run,
+          not three sessions later while debugging something else.
+Rejected: Leaving the fallback as the "fix" — it was never broken as
+          a safety net, but treating "always falls back" as
+          acceptable behavior would mean scope classification never
+          actually works, which defeats the feature.
+Revisit:  Worth deliberately testing other real-API-only divergences
+          (extra prose before/after JSON, trailing commentary) the
+          same way — via a real run first, then a regression test
+          that's proven to fail pre-fix — rather than trying to
+          preemptively guess every way a live model might diverge
+          from a hand-written fixture.
+
+---
+
+## D-0015 — .env is gitignored, so .env.example changes don't propagate
+
+Date: 2026-08-22 · Session 4 (post-hoc) · Status: noted, not a code fix
+
+Context:  Aaron's live `overture extract` run failed with
+          `ModuleNotFoundError: No module named 'psycopg2'` when
+          persisting to Postgres. Root cause: his actual `.env` file
+          (created early, likely right after session 1) still had the
+          original `DATABASE_URL=postgresql://...` value from before
+          session 2 added the `+asyncpg` driver requirement to
+          `.env.example`'s default. Because `.env` is gitignored by
+          design (D-0002 exists specifically so real secrets never
+          land in git), a change to `.env.example` in a later session
+          has no way to reach a `.env` file a person already created
+          — there's no mechanism that re-syncs them.
+Decision: No code change. This is a process gap, not a code bug:
+          `.env.example` is the template, `.env` is a one-time copy
+          the person owns and must update themselves when the
+          template changes in a way that matters.
+Why:      Keeping `.env` out of git is correct and not up for
+          revisiting (D-0002) — the alternative (committing secrets)
+          is strictly worse. The real fix is procedural: whenever a
+          session changes what `.env.example` expects, say so
+          explicitly and tell Aaron to diff his real `.env` against
+          it, rather than assuming a `cp` from session 1 is still
+          accurate several sessions later.
+Rejected: Adding a startup check that validates `DATABASE_URL` starts
+          with `postgresql+asyncpg://` and fails fast with a clear
+          message — a reasonable idea, genuinely worth doing, but
+          scoped as a session 5+ improvement rather than a reactive
+          patch bolted on immediately after hitting this once.
+Revisit:  Session 5 — add that startup validation to Settings as a
+          proper field validator, not a special-cased error message.
+
+---
+
+## D-0016 — print the raw response on scope-classification parse failure
+
+Date: 2026-08-22 · Session 4 (post-hoc) · Status: added
+
+Context:  After fixing D-0014 (missing code-fence stripping), Aaron's
+          next live run against the same 39-item transcript still
+          produced 39/39 needs_clarification. Two guesses in a row
+          without seeing the actual raw model response is one too
+          many — continuing to hypothesize blind wastes a live-API
+          call each time and doesn't converge any faster than just
+          looking at the real text.
+Decision: On both failure paths in `classify_scope` (JSON that parses
+          but has the wrong length, and JSON that fails to parse
+          entirely), print the raw response text to stderr before
+          falling back. Also raised `max_tokens` for this call from
+          1024 to 4096 -- 39 short labels barely need any tokens, but
+          if the model adds explanation text despite instructions,
+          1024 tokens is tight enough to genuinely risk truncating the
+          JSON array mid-response, which produces the exact same
+          symptom (JSONDecodeError -> fallback) as the fence-stripping
+          bug did.
+Why:      This turns "the fallback silently fired again, guess why"
+          into "here is the exact text that failed to parse, and
+          here is exactly why." The fallback itself is correct and
+          stays (D-0012) -- what was missing was visibility into what
+          it was falling back *from*. Bumping max_tokens is a cheap,
+          low-risk change that removes one entire plausible cause
+          before even needing the new diagnostic output.
+Rejected: Continuing to iterate by hypothesis without adding
+          visibility -- already tried once (D-0014) and cost a full
+          extra live-API round trip to discover it wasn't the whole
+          story.
+Revisit:  Once scope classification is confirmed working reliably
+          across a few real transcripts, consider downgrading this
+          from print-to-stderr to proper structured logging (the
+          project has no logging framework wired in yet) -- stderr
+          printing is the right amount of ceremony for now, while
+          this exact code path is still being actively debugged.

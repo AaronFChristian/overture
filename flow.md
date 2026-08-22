@@ -152,6 +152,53 @@ Anything needing config imports `get_settings()` — nothing reads
 
 ---
 
+## Trace: overture extract <transcript.txt> (CLI entry point)
+
+```
+$ uv run overture extract data/sample_transcripts/manufacturing_vendor_contracts.txt
+
+overture/cli.py :: main()
+  argparse dispatches to run_extract(Path(...))
+
+overture/cli.py :: run_extract(transcript_path)
+  transcript = transcript_path.read_text()
+  session_id = uuid.uuid4()
+
+  overture/providers/factory.py :: get_llm_provider(settings)
+    -> real AnthropicProvider (or AzureOpenAIProvider), per
+       settings.llm_provider -- FIRST REAL PROVIDER INSTANCE in the
+       codebase; every prior test used a FakeProvider
+
+  overture/graph/builder.py :: build_graph(provider)
+    -> compiled graph, checkpointer=None (still no Postgres
+       checkpointer wired -- see open threads)
+
+  graph.ainvoke({"session_id": ..., "transcript": ...})
+    -> full trace already documented above -- unchanged, just now
+       running against real Claude output instead of a fixture
+
+  prints brief.summary and every Requirement with its source quote
+    directly to stdout -- this is the point where a bad real-world
+    extraction becomes visible immediately, before anything is saved
+
+  overture/db/session.py :: get_sessionmaker()
+    -> FIRST REAL CALLER of this function; sessions 1-3 built it but
+       nothing used it
+
+  overture/db/repository.py :: persist_extraction_result(db, session, brief)
+    db.add(DiscoverySession ORM row)
+    db.add(Requirement ORM row) -- once per brief.requirements item
+    db.add(SolutionBrief ORM row)
+    -- does NOT commit; cli.py commits once after this returns, so a
+       failure mid-persist leaves nothing partially written
+
+  db.commit()   -- FIRST REAL WRITE to Postgres from application code
+                    (the Alembic migration created the tables; this is
+                    the first row ever written to them by the app)
+```
+
+---
+
 ## AI surface by phase
 
 What the AI (me, in this project) was allowed to write or decide, per
@@ -163,27 +210,29 @@ actually design vs generate."
 | 1 | Full scaffold: config, health endpoint, Docker Compose, CI, Makefile, this file and decisions.md | Nothing yet gated — no validator exists until session 5. All output reviewed and verified green by Aaron before commit. |
 | 2 | Pydantic schemas, SQLAlchemy models, Alembic migration, provider abstraction (both implementations) | Did not decide to make `source_span` optional even though it would have made the schema "easier" to satisfy in early testing — see D-0005. Migration SQL verified offline only; live-DB proof is Aaron's step, not mine. |
 | 3 | Full extraction graph: 5 node functions, prompts, span-location/parsing logic, graph builder, 4 end-to-end tests against a fake provider | Did not add an LLM call to `assemble_brief` even though a prose summary would look more polished — see D-0010. Did not attempt partial index alignment on a scope-classification length mismatch — see D-0012. Zero real LLM calls made or tested here; all graph logic verified against a FakeProvider, never api.anthropic.com. |
+| 4 | Persistence layer (pure mapping function + async writer), CLI entry point, 3 synthetic transcripts, 2 tests for the pure mapping function | Did not write a test claiming to prove `persist_extraction_result` works against real Postgres — it can't be, from this environment. Did not wire an `AsyncPostgresSaver` checkpointer — deferred, see open threads. Zero real Claude calls made from this environment; the CLI is verified structurally (help text, argument validation, missing-file handling) but not against api.anthropic.com — that first real call is Aaron's step. |
 
 ---
 
 ## Open threads for next session
 
-- Migration proven against live Postgres (confirmed by Aaron, session
-  2 close-out).
-- The graph has no real entry point yet — nothing calls
-  `build_graph()` with a real `AnthropicProvider` or wires an
-  `AsyncPostgresSaver` checkpointer. That's the natural start of
-  session 4: either a CLI command or a `POST /api/v1/sessions/{id}/extract`
-  route, plus the first real (non-fake) run against the live Anthropic
-  API with Aaron's key.
-- No auth exists yet. `/health` is intentionally public; every other
-  route added from session 4 onward needs an explicit auth decision
+- The first real, live run against api.anthropic.com — using Aaron's
+  key, one of the three sample transcripts, via `uv run overture
+  extract` — has NOT happened yet as of this file's last edit. This
+  is the single most important unverified thing in the codebase right
+  now: everything upstream of this point has been tested against a
+  FakeProvider only.
+- `persist_extraction_result` has never run against a live database.
+  Same verification gap as the session 2 Alembic migration — proven
+  correct as Python, not yet proven as SQL that actually executes.
+- No `AsyncPostgresSaver` checkpointer wired into `build_graph()` yet
+  — `cli.py` still calls it with `checkpointer=None`, so a failure
+  mid-extraction can't currently be resumed, it just fails and the
+  whole transcript needs re-running.
+- No auth exists yet. `/health` is intentionally public; the CLI has
+  no auth model at all (it's local-only, reads Aaron's own `.env`).
+  The first HTTP route (session 6) needs an explicit auth decision
   logged before it ships.
-- `db/session.py::get_db` exists but nothing depends on it yet —
-  session 4's routes are the first real caller. Similarly, nothing
-  persists a DiscoverySession, Requirement, or SolutionBrief to
-  Postgres yet — the graph produces Pydantic objects in memory only;
-  writing them to the db/models.py tables is session 4 work.
 - `segment()` currently splits on blank lines only — no
   speaker-attribution awareness. Fine for the synthetic transcripts
   used in testing; real discovery-call transcripts (session 4's

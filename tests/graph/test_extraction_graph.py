@@ -23,9 +23,10 @@ class FakeProvider:
     guaranteed) order in which parallel extraction nodes complete.
     """
 
-    def __init__(self, mismatched_scope: bool = False) -> None:
+    def __init__(self, mismatched_scope: bool = False, fence_scope_response: bool = False) -> None:
         self.calls: list[str] = []
         self._mismatched_scope = mismatched_scope
+        self._fence_scope_response = fence_scope_response
 
     async def complete(
         self, *, system: str, messages: list[Message], max_tokens: int = 1024
@@ -76,7 +77,13 @@ class FakeProvider:
             match = re.search(r"exactly (\d+) elements", prompt)
             n = int(match.group(1)) if match else 0
             count = max(n - 1, 0) if self._mismatched_scope else n
-            text = json.dumps(["in_scope"] * count)
+            labels_json = json.dumps(["in_scope"] * count)
+            # Real Claude output wraps batched JSON responses in a
+            # markdown code fence more often than not -- this is
+            # deliberately NOT stripped here, so the graph's own
+            # fence-stripping (strip_code_fences, see D-0014) is what's
+            # under test, not the fake's convenience.
+            text = f"```json\n{labels_json}\n```" if self._fence_scope_response else labels_json
         else:
             text = "[]"
 
@@ -127,6 +134,23 @@ async def test_scope_mismatch_falls_back_to_needs_clarification() -> None:
 
     assert len(brief.requirements) == 3
     assert all(r.scope.value == "needs_clarification" for r in brief.requirements)
+
+
+@pytest.mark.asyncio
+async def test_scope_response_wrapped_in_code_fence_still_parses() -> None:
+    # Regression test for a real bug found via live-API testing (D-0014):
+    # classify_scope originally had no code-fence stripping, so a
+    # ```json-wrapped response silently fell back to
+    # needs_clarification for every item instead of parsing correctly.
+    provider = FakeProvider(fence_scope_response=True)
+    graph = build_graph(provider)
+    session_id = str(uuid.uuid4())
+
+    result = await graph.ainvoke({"session_id": session_id, "transcript": TRANSCRIPT})
+    brief = result["brief"]
+
+    assert len(brief.requirements) == 3
+    assert all(r.scope.value == "in_scope" for r in brief.requirements)
 
 
 @pytest.mark.asyncio

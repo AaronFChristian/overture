@@ -11,9 +11,10 @@ eventually only get applied in three. See decisions.md D-0009.
 """
 
 import json
+import sys
 from collections.abc import Awaitable, Callable
 
-from overture.graph.llm_output import locate_span, parse_signals_response
+from overture.graph.llm_output import locate_span, parse_signals_response, strip_code_fences
 from overture.graph.prompts import SCOPE_CLASSIFICATION_PROMPT
 from overture.graph.state import ExtractionState
 from overture.providers.base import LLMProvider, Message
@@ -113,15 +114,38 @@ def make_classify_scope(
         result = await provider.complete(
             system="You are a careful, conservative scoping assistant.",
             messages=[Message(role="user", content=prompt)],
-            max_tokens=1024,
+            # 39 short labels needs very few tokens, but this is sized
+            # generously (not the original 1024) specifically so any
+            # stray explanation text the model adds despite
+            # instructions doesn't truncate the JSON array mid-response
+            # -- a truncated array is a JSONDecodeError, which looks
+            # identical to a fenced response until you print the raw
+            # text (see the diagnostic logging below, added after this
+            # exact failure mode was hit on a real 39-item batch).
+            max_tokens=4096,
         )
 
         labels: list[str] | None = None
         try:
-            parsed = json.loads(result.text.strip())
+            parsed = json.loads(strip_code_fences(result.text))
             if isinstance(parsed, list) and len(parsed) == len(signals):
                 labels = parsed
-        except json.JSONDecodeError:
+            else:
+                got = len(parsed) if isinstance(parsed, list) else type(parsed).__name__
+                print(
+                    f"[overture] scope classification: parsed JSON but got {got} "
+                    f"items, expected {len(signals)} -- falling back to "
+                    "needs_clarification for all items in this batch.\n"
+                    f"Raw response was:\n{result.text}",
+                    file=sys.stderr,
+                )
+        except json.JSONDecodeError as exc:
+            print(
+                f"[overture] scope classification: failed to parse JSON ({exc}) "
+                "-- falling back to needs_clarification for all items in this "
+                f"batch.\nRaw response was:\n{result.text}",
+                file=sys.stderr,
+            )
             labels = None
 
         classified: list[RequirementSchema] = []

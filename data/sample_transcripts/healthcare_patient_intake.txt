@@ -1,0 +1,21 @@
+Discovery call — Ridgeline Family Health, intake documentation review
+
+Let's start broad — what's the biggest headache in your intake process today?
+
+Our front desk staff spend probably two hours a day just re-keying information from paper intake forms into our EHR. Patients fill out the same insurance and history questions every visit even when nothing's changed, and half the time the handwriting is illegible so someone has to call the patient back to confirm.
+
+That's a real time sink. Are there compliance considerations layered on top of that?
+
+Absolutely, this is healthcare, so everything touches PHI. Anything we adopt has to be HIPAA compliant, full stop, and our compliance officer will want a signed BAA before any of this touches real patient data. We also can't have intake forms stored anywhere outside our existing Epic-adjacent systems without a very good reason.
+
+Makes sense. What would you want a first version of this to actually do?
+
+If a nurse could just point a scanner at a stack of intake forms and have the key fields — allergies, current medications, reason for visit — pulled out automatically and flagged for review before anything hits the chart, that alone would save us hours a day. I don't need it to be perfect, I need a human to still sign off on anything before it's final.
+
+Any other systems or workflows this needs to play nicely with?
+
+We use a separate billing vendor for insurance verification, that's totally outside our four walls and honestly out of scope — please don't try to integrate with that, it's a whole separate contract negotiation we're not ready to open. Focus on what happens between the patient handing us the clipboard and the data landing correctly in the chart.
+
+Last question — any appetite for this to eventually handle scheduling too?
+
+Maybe down the line, but that's not what's keeping me up at night. Intake accuracy is the fire I need put out first.

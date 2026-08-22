@@ -1,0 +1,21 @@
+Discovery call — Meridian Fabrication Group, procurement modernization
+
+Thanks for making time today. Can you walk me through what's actually happening on the ground with vendor contracts right now?
+
+Sure. We're a mid-size metal fabrication shop, about 400 employees across two plants. Every vendor contract — raw materials, tooling, logistics — lives in SharePoint, but there's no consistent naming, no tagging. Legal has to manually review every renewal, and that takes three weeks minimum per contract right now, sometimes longer during Q4 when volume spikes.
+
+That's a lot of manual review. What's driving the three weeks specifically?
+
+Honestly, nobody can quickly answer basic questions like "which contracts have auto-renewal clauses" or "what's our total exposure to this one steel supplier." Someone has to open every PDF by hand. We've missed two renewal deadlines this year because a contract just got lost in the shuffle.
+
+Got it. And on the technical side — what does your environment look like? Any constraints we should know about going in?
+
+We're an all-Microsoft shop. Everything's in SharePoint and Teams, procurement runs on Dynamics. Whatever we build has to sit inside that ecosystem — we can't have our procurement team logging into some separate portal. IT is also pretty strict about data residency, contracts can't leave our tenant.
+
+Understood. If you could wave a magic wand, what would the ideal outcome look like?
+
+I want someone in procurement to be able to ask "show me every contract expiring in the next 90 days with auto-renewal" and just get an answer, with the source contract right there so they can verify it. And flag anything with unusual liability language for legal to look at first, before it becomes a fire drill.
+
+That's a clear target. One more thing — do you have any subsidiaries or other business units we should think about?
+
+We do have a joint venture in Germany, Meridian EU, but honestly that's a separate legal entity with its own contract systems entirely. I wouldn't worry about that for a first pass — different problem, different team.
