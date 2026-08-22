@@ -177,3 +177,44 @@ Rejected: Suffixing one side (`RequirementORM`, `RequirementModel`) —
 Revisit:  If this discipline gets violated in a later session (a bare
           double-import slips through), that's a signal to reconsider
           — not before.
+
+---
+
+## D-0008 — Terminal-only for all file operations, including single-file copies
+
+Date: 2026-08-22 · Session 2 (post-hoc, discovered during verification) · Status: accepted
+
+Context:  Session 2's delta was applied by dragging files from the
+          unzipped folder into the working repo in Finder, instead of
+          `unzip` + `rsync -a` as instructed. Finder's drag-and-drop
+          overwrite silently deleted six files it wasn't supposed to
+          touch (`main.py`, `api/__init__.py`, `api/health.py`,
+          `tests/test_health.py`, and both `__init__.py` files) —
+          none of which were part of the session 2 delta and should
+          have been left untouched. `make verify` still reported
+          green afterward, because ruff/mypy/pytest only check
+          whatever files happen to exist; none of them can detect a
+          file going missing.
+Decision: Every file operation on this repo — copying a delta,
+          extracting an archive, moving a single file — goes through
+          the terminal (`unzip`, `rsync -a`, `cp`, `mv`), never
+          Finder, never drag-and-drop, regardless of how small the
+          change looks.
+Why:      This is the same failure class already logged from a prior
+          project (Finder "Replace" wiping a source directory during
+          zip extraction), just triggered a second way. The pattern
+          isn't "zips are dangerous" — it's "Finder's copy/overwrite
+          operation is not additive-safe in general." Terminal
+          commands were chosen specifically because they're either
+          additive-only (`rsync -a` without `--delete`) or their
+          blast radius is explicit and visible in the command itself,
+          unlike a Finder drag whose scope isn't inspectable before
+          it runs.
+Rejected: Trusting Finder for "just this once, it's a small change" —
+          this is precisely the reasoning that led to it happening
+          twice.
+Revisit:  Not expected to change. If a GUI file operation is ever
+          genuinely necessary, verify file counts (`find ... | wc -l`
+          or equivalent) immediately after, before running `make
+          verify` — a passing test suite is not evidence that no
+          files went missing.
