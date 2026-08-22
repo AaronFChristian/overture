@@ -218,3 +218,125 @@ Revisit:  Not expected to change. If a GUI file operation is ever
           or equivalent) immediately after, before running `make
           verify` — a passing test suite is not evidence that no
           files went missing.
+
+---
+
+## D-0009 — one factory function for all four extraction categories
+
+Date: 2026-08-22 · Session 3 · Status: accepted
+
+Context:  Pain, constraint, requirement, and vocabulary extraction
+          (the four parallel fan-out nodes) are structurally
+          identical: call the LLM with a category-specific prompt,
+          parse the response, locate each quote's span, build
+          Requirements, drop anything that doesn't locate.
+Decision: `make_signal_extractor(category, prompt_template, provider)`
+          is a factory returning one node function. Called four times
+          in builder.py with different arguments, instead of four
+          separate near-duplicate async functions.
+Why:      Any future fix to the shared logic — a parsing edge case, a
+          retry policy, a change to how spans are located — applies
+          in one place. Four copy-pasted functions drift: a fix
+          applied to three of four during a rushed session is a real
+          failure mode, not a hypothetical one.
+Rejected: Four separate functions (`extract_pains`, `extract_constraints`,
+          etc.) — more obviously named at the call site, but the
+          duplication cost outweighs that; the factory call sites in
+          builder.py are still self-documenting via their arguments.
+Revisit:  If a category ever needs genuinely different logic (not just
+          a different prompt), that category gets pulled out of the
+          factory into its own function — not before.
+
+---
+
+## D-0010 — assemble_brief has no LLM call
+
+Date: 2026-08-22 · Session 3 · Status: accepted
+
+Context:  The final graph node turns classified requirements into a
+          SolutionBrief with a summary.
+Decision: The summary is composed from counts (category breakdown,
+          in/out/needs-clarification totals) in plain Python — no
+          model call.
+Why:      Consistent with the project's spine (AI proposes,
+          deterministic code writes — see D-0009 in the original
+          architecture discussion, and the config validator planned
+          for session 5). The requirements were already extracted and
+          classified by the nodes upstream; composing them into a
+          countable summary is aggregation, not generation, and
+          aggregation done deterministically is both cheaper and
+          impossible to hallucinate.
+Rejected: An LLM-written prose summary — more polished output, but it
+          would be the one place in the graph where the final
+          artifact's accuracy depends on the model correctly
+          summarizing its own upstream output rather than on
+          arithmetic. Not worth the risk for what's fundamentally a
+          count.
+Revisit:  If user-facing polish on the summary becomes a real
+          requirement (session 6+, when this reaches the demo UI),
+          consider a presentation-layer LLM rewrite of the
+          deterministic summary — as a display transform, not a
+          replacement for how the brief itself is assembled.
+
+---
+
+## D-0011 — scoped type: ignore on StateGraph.add_node calls
+
+Date: 2026-08-22 · Session 3 · Status: accepted
+
+Context:  LangGraph 1.2.11's type stubs for `StateGraph.add_node`
+          resolve the node-callable overloads against `Never` for our
+          usage pattern (a plain `async def (state) -> dict` closure
+          returned from a factory function), even after explicitly
+          parametrizing `StateGraph[ExtractionState, Any, Any]`. The
+          graph runs correctly at runtime — this is purely a static
+          typing mismatch in a library that recently overhauled its
+          generics.
+Decision: Six `# type: ignore[arg-type]` comments on the `add_node`
+          calls in builder.py, each on the exact line the mismatch
+          occurs, not a blanket file-level ignore.
+Why:      mypy strict is a real gate elsewhere in this codebase — the
+          alternative to a scoped ignore here is either downgrading
+          mypy strictness project-wide (unacceptable, loses real
+          coverage everywhere else) or fighting a third-party stub
+          bug with no guarantee of a clean resolution. A narrow,
+          commented ignore keeps the gate meaningful for every other
+          line while being honest about the one spot it can't help.
+Rejected: `# type: ignore` at file level — too broad, would silently
+          swallow a real type error introduced anywhere else in this
+          file later.
+Revisit:  Re-check on the next LangGraph version bump — if the stubs
+          fix this, remove the ignores; mypy will flag them as
+          unused ignores if so, which is itself the signal to revisit.
+
+---
+
+## D-0012 — scope classification is batched, with strict fallback on mismatch
+
+Date: 2026-08-22 · Session 3 · Status: accepted
+
+Context:  Every extracted requirement needs a scope label
+          (in_scope / out_of_scope / needs_clarification). Calling the
+          LLM once per requirement doesn't scale — a 30-requirement
+          transcript would mean 30 round trips for what's a fairly
+          simple classification task.
+Decision: One call classifies the entire batch, matched back to
+          requirements strictly by array index. If the model returns
+          a different number of labels than requirements sent, every
+          requirement in that batch falls back to
+          NEEDS_CLARIFICATION rather than attempting a partial or
+          best-effort alignment.
+Why:      A length mismatch means the response can't be trusted to be
+          positionally aligned — attempting to zip a 28-item response
+          against 30 requirements risks silently mislabeling two
+          requirements with someone else's scope, which is worse than
+          an honest "needs clarification" on all of them. Fail loud
+          and conservative, not quiet and wrong.
+Rejected: Per-requirement classification calls — correct and simple,
+          but doesn't scale on cost or latency for longer transcripts.
+          Fuzzy/partial index alignment on mismatch — rejected for the
+          reason above.
+Revisit:  If batch sizes grow large enough to risk the single
+          response exceeding a reasonable token budget, consider
+          chunking into multiple batched calls rather than reverting
+          to per-item calls.
