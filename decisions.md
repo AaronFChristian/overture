@@ -506,3 +506,165 @@ Revisit:  Once scope classification is confirmed working reliably
           project has no logging framework wired in yet) -- stderr
           printing is the right amount of ceremony for now, while
           this exact code path is still being actively debugged.
+
+---
+
+## D-0017 — blueprints are a closed, hardcoded catalog; selection is scored, not chosen by the model
+
+Date: 2026-08-22 · Session 5 · Status: accepted
+
+Context:  A POC demo needs a shape -- what tools it has, what it's
+          allowed to do. There are exactly three shapes this project
+          supports (grounded document Q&A, triage/routing, structured
+          extraction), matching the report's original architecture.
+Decision: `poc/blueprints.py` defines all three as frozen dataclasses
+          in a fixed tuple, `ALL_BLUEPRINTS`. `select_blueprint()` in
+          `poc/compiler.py` scores a SolutionBrief's in-scope
+          requirement text against each blueprint's capability_tags
+          (case-insensitive substring counting) and picks the highest
+          score, ties broken by declaration order. No LLM call
+          anywhere in selection.
+Why:      This is the same principle as D-0005 and D-0010 applied to
+          infrastructure instead of extracted data: letting the model
+          choose the blueprint means letting it choose which tools a
+          demo gets, which is a security/scope decision, not a
+          content-generation one. A deterministic scorer is also
+          trivially unit-testable (see test_blueprints.py) in a way
+          "ask the LLM which blueprint fits" never could be --
+          same input always produces the same blueprint, forever.
+Rejected: LLM-based blueprint selection (e.g. "given this brief, which
+          of these three blueprints fits best?") -- more flexible on
+          paper, but non-deterministic, harder to test, and gives the
+          model influence over tool attachment that the validator
+          (D-0018) is specifically designed to keep out of its hands.
+Revisit:  If a fourth blueprint is ever added, it goes into
+          `ALL_BLUEPRINTS` alongside the other three -- the scoring
+          mechanism doesn't change, just the catalog it scores against.
+
+---
+
+## D-0018 — the config validator is the only code with authority to mark a DemoConfig VALIDATED
+
+Date: 2026-08-22 · Session 5 · Status: accepted
+
+Context:  A DemoConfig assembled by `fill_config` (blueprint + LLM
+          slot content) needs a final check before anything downstream
+          could ever deploy it — the original architecture's headline
+          claim from session 0 planning: "the validator is the only
+          component with write authority over a manifest."
+Decision: `poc/validator.py`'s `validate_config()` is a pure function:
+          takes a DemoConfig, returns a new one with `status` and
+          `validation_errors` set. It checks blueprint_id against the
+          known catalog, every tool against a hardcoded
+          `TOOL_ALLOWLIST`, token_budget against a ceiling,
+          system_prompt non-empty, and at least one sample question.
+          Zero imports of anthropic, openai, or the provider Protocol
+          anywhere in the file — enforced by a test that greps the
+          module's own source for those strings.
+Why:      Every failure mode this module catches is a failure mode
+          `fill_config` (which does call an LLM) could plausibly
+          produce: an empty or malformed system prompt from a bad
+          parse, a hallucinated tool name, a runaway token budget.
+          The validator's entire value is that it cannot inherit any
+          of the LLM's failure modes, because it never talks to one.
+          Testing that claim with a real test (not just a comment)
+          means the invariant breaks loudly (a failing test) the
+          moment someone imports a provider into this file for a
+          shortcut, rather than silently eroding over time.
+Rejected: Folding validation into `fill_config` itself, as a
+          post-processing step in the same function — rejected
+          because it blurs exactly the line this project's whole
+          pitch depends on: AI proposes, deterministic code decides
+          what ships. Keeping them in separate modules, one of which
+          is proven LLM-free, makes that line an architectural fact,
+          not a convention someone could accidentally violate.
+Revisit:  Not expected to change. If validation rules grow complex
+          enough to want a JSON Schema library instead of hand-written
+          checks, the "no LLM import" constraint carries forward
+          unchanged regardless of what validates the shape.
+
+---
+
+## D-0019 — fill_config must ground on quoted_text, not the paraphrased label, for vocabulary items
+
+Date: 2026-08-22 · Session 5 (post-hoc, found via Aaron's live run) · Status: fixed
+
+Context:  Aaron's first live run of the compiler produced a system
+          prompt opening with "Harlow Contract Intelligence assistant
+          ... Harlow Industrial Group's vendor contracts." The real
+          transcript never mentions any company but "Meridian
+          Fabrication Group." The model also invented contract
+          categories ("facilities services," "IT/software licensing")
+          and numeric thresholds ("$1M," "60-day notice") that appear
+          nowhere in the source. Root cause: `fill_config` built its
+          vocabulary section from `Requirement.text`, which for
+          VOCABULARY-category items is a paraphrased LABEL the
+          extraction graph writes (e.g. "Company name"), not the
+          actual term -- the real value only lives in
+          `source_span.quoted_text`. The prompt handed the model
+          "Company name" with nothing after it, and the model filled
+          the gap with something plausible-sounding, exactly as an
+          LLM will when given an incomplete pattern to complete.
+Decision: `vocabulary` in `fill_config` now formats each item as
+          `f'"{r.source_span.quoted_text}" ({r.text})'` -- the actual
+          quoted term first, the paraphrased label as parenthetical
+          context. A regression test captures the prompt sent to a
+          fake provider and asserts the real quoted value appears in
+          it; proven to fail against the pre-fix code (reproducing
+          the exact "In-scope needs:\n- Company name" gap) before
+          being confirmed to pass against the fix.
+Why:      This is more serious than a cosmetic bug: it's the compiler
+          actively contradicting the project's core architectural
+          claim -- that generated content stays grounded in what a
+          prospect actually said. It slipped past every existing test
+          because the FakeSlotFillProvider tests never checked prompt
+          *content*, only response parsing; nothing verified what was
+          actually sent to the model until this test did.
+Rejected: Leaving Requirement.text as the only vocabulary signal and
+          instead trying to make the extraction prompts (session 3)
+          write a better paraphrase -- doesn't fix the root cause,
+          which is that fill_config was discarding a field
+          (source_span.quoted_text) that already had the real answer.
+Revisit:  Worth auditing whether `in_scope` (pain/constraint/requirement
+          text, not vocabulary) has a milder version of this same
+          risk -- those paraphrases are generally more complete
+          sentences than vocabulary labels, but a systematic pass
+          checking every prompt-building function for "am I passing
+          the paraphrase where I should be passing the source" would
+          be a reasonable session 6 audit item.
+
+---
+
+## D-0020 — the validator checks structure, not factual grounding, and that's a known limit
+
+Date: 2026-08-22 · Session 5 (post-hoc) · Status: noted, scoping decision
+
+Context:  D-0019's hallucination (a fabricated company name) shipped
+          through `validate_config` with status VALIDATED before the
+          bug was found. The validator correctly checked that
+          system_prompt was non-empty, tools were allowlisted, and
+          sample_questions existed -- it had no way to know "Harlow
+          Industrial Group" wasn't a real term from the brief, because
+          checking that would require re-reading the brief's content
+          and reasoning about factual consistency, which is exactly
+          the kind of judgment call D-0018 keeps out of the validator
+          on purpose (no LLM calls allowed in that module).
+Decision: No change to the validator's scope. This is logged
+          explicitly so "validated" is never overclaimed in a demo or
+          interview as "fact-checked" or "hallucination-free" -- it
+          means "structurally well-formed and within policy," nothing
+          more.
+Why:      A deterministic validator that could actually catch semantic
+          hallucination would need to either call an LLM (reintroducing
+          the exact failure mode it exists to guard against) or do
+          fragile string-matching against extracted vocabulary terms
+          (high false-negative rate -- paraphrasing legitimately
+          changes wording). Neither is worth adding speculatively.
+          D-0019's fix (ground the prompt properly) addresses the
+          actual root cause; this decision just names the residual
+          risk honestly rather than pretending the validator closes it.
+Revisit:  If this class of bug recurs after D-0019's fix, a narrow,
+          specific check might be worth adding -- e.g., confirming
+          every proper-noun-looking token in system_prompt appears
+          somewhere in the brief's source spans. Not worth building
+          speculatively before there's evidence it's still needed.

@@ -192,6 +192,41 @@ overture/cli.py :: run_extract(transcript_path)
     -- does NOT commit; cli.py commits once after this returns, so a
        failure mid-persist leaves nothing partially written
 
+  overture/poc/compiler.py :: select_blueprint(brief)
+    PURE, DETERMINISTIC, NO LLM CALL -- scores brief's in-scope
+    requirement text against each Blueprint's capability_tags,
+    returns the highest-scoring one (D-0017)
+
+  overture/poc/compiler.py :: fill_config(brief, blueprint, provider)
+    provider.complete(...) -- ONE LLM call, writes system_prompt and
+      sample_questions content only; blueprint_id and tools come from
+      the Blueprint object selected above, never from this call
+    -> DemoConfig(status=DRAFT)
+
+  overture/poc/validator.py :: validate_config(demo_config)
+    NO LLM CALL ANYWHERE IN THIS MODULE (D-0018, enforced by a test
+    that greps the module's own source)
+    checks: blueprint_id known, every tool in TOOL_ALLOWLIST,
+      token_budget in range, system_prompt non-empty,
+      >=1 sample question
+    -> DemoConfig(status=VALIDATED, validation_errors=[])  on pass
+    -> DemoConfig(status=REJECTED, validation_errors=[...])  on fail
+       (every failure reported, not just the first)
+
+  prints brief.summary and every Requirement with its source quote,
+    then the selected blueprint and the validated (or rejected)
+    DemoConfig's system prompt and sample questions -- all before
+    anything is saved
+
+  overture/db/session.py :: get_sessionmaker()
+    -> FIRST REAL CALLER of this function; sessions 1-3 built it but
+       nothing used it
+
+  overture/db/repository.py :: persist_demo_config(db, demo_config)
+    db.add(DemoConfig ORM row) -- staged in the SAME transaction as
+      persist_extraction_result above, so a session's requirements
+      and its demo config either both land or neither does
+
   db.commit()   -- FIRST REAL WRITE to Postgres from application code
                     (the Alembic migration created the tables; this is
                     the first row ever written to them by the app)
@@ -210,21 +245,21 @@ actually design vs generate."
 | 1 | Full scaffold: config, health endpoint, Docker Compose, CI, Makefile, this file and decisions.md | Nothing yet gated — no validator exists until session 5. All output reviewed and verified green by Aaron before commit. |
 | 2 | Pydantic schemas, SQLAlchemy models, Alembic migration, provider abstraction (both implementations) | Did not decide to make `source_span` optional even though it would have made the schema "easier" to satisfy in early testing — see D-0005. Migration SQL verified offline only; live-DB proof is Aaron's step, not mine. |
 | 3 | Full extraction graph: 5 node functions, prompts, span-location/parsing logic, graph builder, 4 end-to-end tests against a fake provider | Did not add an LLM call to `assemble_brief` even though a prose summary would look more polished — see D-0010. Did not attempt partial index alignment on a scope-classification length mismatch — see D-0012. Zero real LLM calls made or tested here; all graph logic verified against a FakeProvider, never api.anthropic.com. |
-| 4 | Persistence layer (pure mapping function + async writer), CLI entry point, 3 synthetic transcripts, 2 tests for the pure mapping function | Did not write a test claiming to prove `persist_extraction_result` works against real Postgres — it can't be, from this environment. Did not wire an `AsyncPostgresSaver` checkpointer — deferred, see open threads. Zero real Claude calls made from this environment; the CLI is verified structurally (help text, argument validation, missing-file handling) but not against api.anthropic.com — that first real call is Aaron's step. |
+| 4 | Persistence layer (pure mapping function + async writer), CLI entry point, 3 synthetic transcripts, 2 tests for the pure mapping function | Did not write a test claiming to prove `persist_extraction_result` works against real Postgres — it can't be, from this environment. Did not wire an `AsyncPostgresSaver` checkpointer — deferred, see open threads. Zero real Claude calls made from this environment; the CLI is verified structurally (help text, argument validation, missing-file handling) but not against api.anthropic.com — that first real call is Aaron's step. A real bug was found on Aaron's first live run (D-0014, missing code-fence stripping in classify_scope) and fixed with a proven regression test, plus a second real gap (D-0015, stale `.env` DATABASE_URL) that was a process issue, not code — both closed out by session's end. |
+| 5 | Blueprint catalog (3 fixed blueprints), deterministic scoring (`select_blueprint`), LLM-assisted slot filling (`fill_config`), the LLM-free config validator (`validate_config`), persistence for DemoConfig, CLI wiring, 18 new tests | Did not let the LLM choose which blueprint to use, or which tools attach to one — see D-0017. Did not put validation logic inside `fill_config` even though it would have been fewer files — see D-0018. Wrote a test that greps `validator.py`'s own source to prove it never imports a provider, rather than trusting a comment to stay true. `fill_config`'s real-API behavior is untested here — same gap as sessions 1-4's first LLM-touching code, closed by Aaron's next live run. |
 
 ---
 
 ## Open threads for next session
 
-- The first real, live run against api.anthropic.com — using Aaron's
-  key, one of the three sample transcripts, via `uv run overture
-  extract` — has NOT happened yet as of this file's last edit. This
-  is the single most important unverified thing in the codebase right
-  now: everything upstream of this point has been tested against a
-  FakeProvider only.
-- `persist_extraction_result` has never run against a live database.
-  Same verification gap as the session 2 Alembic migration — proven
-  correct as Python, not yet proven as SQL that actually executes.
+- `fill_config` and the validator have never run against real Claude
+  output — same verification gap every new LLM-touching module in
+  this project has had at the point it's handed off. Aaron's next
+  `overture extract` run is what closes it, the same way session 4's
+  did for extraction and scope classification.
+- `persist_demo_config` has never run against a live database in this
+  environment — same gap as `persist_extraction_result` before it,
+  closed the same way (Aaron's terminal, not mine).
 - No `AsyncPostgresSaver` checkpointer wired into `build_graph()` yet
   — `cli.py` still calls it with `checkpointer=None`, so a failure
   mid-extraction can't currently be resumed, it just fails and the

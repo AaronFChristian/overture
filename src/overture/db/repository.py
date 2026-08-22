@@ -10,6 +10,7 @@ same split used for the Alembic migration in session 2.
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from overture.db import models as db_models
+from overture.schemas import DemoConfig as DemoConfigSchema
 from overture.schemas import DiscoverySession as DiscoverySessionSchema
 from overture.schemas import Requirement as RequirementSchema
 from overture.schemas import SolutionBrief as SolutionBriefSchema
@@ -63,3 +64,25 @@ async def persist_extraction_result(
             summary=brief.summary,
         )
     )
+
+
+def _demo_config_to_kwargs(config: DemoConfigSchema) -> dict[str, object]:
+    """Pure mapping, no DB access -- mirrors _requirement_to_kwargs above."""
+    return {
+        "id": config.id,
+        "session_id": config.session_id,
+        "blueprint_id": config.blueprint_id,
+        "system_prompt": config.system_prompt,
+        "tools": config.tools,
+        "seed_corpus_ref": config.seed_corpus_ref,
+        "sample_questions": config.sample_questions,
+        "token_budget": config.token_budget,
+        "status": config.status.value,
+        "validation_errors": config.validation_errors,
+    }
+
+
+async def persist_demo_config(db: AsyncSession, config: DemoConfigSchema) -> None:
+    """Stage a DemoConfig row. Does not commit -- same contract as
+    persist_extraction_result above."""
+    db.add(db_models.DemoConfig(**_demo_config_to_kwargs(config)))

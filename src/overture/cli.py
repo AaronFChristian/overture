@@ -19,9 +19,11 @@ import uuid
 from pathlib import Path
 
 from overture.config import get_settings
-from overture.db.repository import persist_extraction_result
+from overture.db.repository import persist_demo_config, persist_extraction_result
 from overture.db.session import get_sessionmaker
 from overture.graph.builder import build_graph
+from overture.poc.compiler import fill_config, select_blueprint
+from overture.poc.validator import validate_config
 from overture.providers.factory import get_llm_provider
 from overture.schemas import DiscoverySession as DiscoverySessionSchema
 
@@ -49,10 +51,27 @@ async def run_extract(transcript_path: Path) -> None:
         print(f'    source: "{req.source_span.quoted_text}"')
     print()
 
+    blueprint = select_blueprint(brief)
+    print(f"Selected blueprint: {blueprint.id} ({blueprint.name})")
+    demo_config = await fill_config(brief, blueprint, provider)
+    demo_config = validate_config(demo_config)
+
+    print(f"Config status: {demo_config.status.value}")
+    if demo_config.validation_errors:
+        for error in demo_config.validation_errors:
+            print(f"  - {error}")
+    else:
+        print(f"System prompt: {demo_config.system_prompt}")
+        print("Sample questions:")
+        for question in demo_config.sample_questions:
+            print(f"  - {question}")
+    print()
+
     sessionmaker = get_sessionmaker()
     async with sessionmaker() as db:
         session_schema = DiscoverySessionSchema(id=session_id, raw_transcript=transcript)
         await persist_extraction_result(db, session_schema, brief)
+        await persist_demo_config(db, demo_config)
         await db.commit()
 
     print(f"Persisted to database as session {session_id}")

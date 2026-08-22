@@ -143,7 +143,9 @@ def make_classify_scope(
             print(
                 f"[overture] scope classification: failed to parse JSON ({exc}) "
                 "-- falling back to needs_clarification for all items in this "
-                f"batch.\nRaw response was:\n{result.text}",
+                f"batch.\nModel reported output_tokens={result.output_tokens}, "
+                f"input_tokens={result.input_tokens}.\n"
+                f"Raw response text was: {result.text!r}",
                 file=sys.stderr,
             )
             labels = None
