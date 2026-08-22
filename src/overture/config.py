@@ -26,9 +26,23 @@ class Settings(BaseSettings):
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 
     database_url: str = Field(
-        default="postgresql://overture:overture@localhost:5432/overture",
-        description="Postgres connection string, pgvector extension required.",
+        default="postgresql+asyncpg://overture:overture@localhost:5432/overture",
+        description="Postgres connection string, pgvector extension required. "
+        "Must use the asyncpg driver — the ORM layer is async end to end.",
     )
+
+    # --- LLM provider selection -------------------------------------------
+    # Claude is primary. Azure OpenAI is a swappable second backend behind
+    # the same interface (see providers/base.py) — see decisions.md D-0006.
+    llm_provider: Literal["anthropic", "azure_openai"] = "anthropic"
+
+    anthropic_api_key: str | None = None
+    anthropic_model: str = "claude-sonnet-5"
+
+    azure_openai_api_key: str | None = None
+    azure_openai_endpoint: str | None = None
+    azure_openai_deployment: str | None = None
+    azure_openai_api_version: str = "2024-10-21"
 
 
 @lru_cache
