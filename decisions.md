@@ -668,3 +668,181 @@ Revisit:  If this class of bug recurs after D-0019's fix, a narrow,
           every proper-noun-looking token in system_prompt appears
           somewhere in the brief's source spans. Not worth building
           speculatively before there's evidence it's still needed.
+
+---
+
+## D-0021 — hand-rolled hashing embedder instead of a third paid API
+
+Date: 2026-08-22 · Session 6 · Status: accepted
+
+Context:  Retrieval needs vectors to compare. Claude has no embeddings
+          endpoint. The obvious options were Voyage AI (Anthropic's
+          recommended embeddings partner) or Azure OpenAI's
+          text-embedding-3-small.
+Decision: `poc/embeddings.py` implements the classic feature-hashing
+          trick (the same technique behind scikit-learn's
+          HashingVectorizer) by hand: tokenize, hash each token to a
+          fixed-width vector index via sha256, sum, L2-normalize.
+          Zero network calls, zero API cost, fully deterministic.
+Why:      This project already carries two LLM provider options
+          (Anthropic, Azure OpenAI) specifically to stay portable and
+          cheap during development (D-0006). Adding a third paid API
+          purely for embeddings, during a phase where the whole
+          point is iterating cheaply on a portfolio project, works
+          against that same reasoning. The hashing trick is a real,
+          well-established technique -- not toy code -- and is
+          honestly explainable in an interview as a deliberate
+          cost/quality tradeoff, not a corner cut out of ignorance.
+          It is also trivially deterministic, which made writing real
+          unit tests (exact-match assertions, not "roughly similar")
+          possible in a way a live embeddings API never would be.
+Rejected: Voyage AI or Azure OpenAI embeddings now -- both are
+          reasonable choices, genuinely better retrieval quality, and
+          explicitly the intended swap-in later: `Embedder` is a
+          Protocol for exactly this reason, mirroring `LLMProvider`.
+          The swap is a new class implementing `.embed()`, not a
+          rewrite of retrieval.py, ingestion.py, or the demo route.
+Revisit:  Session 7-8, once Azure infrastructure exists anyway --
+          swapping in Azure OpenAI embeddings behind the same
+          Protocol is a natural, low-cost upgrade once that spend is
+          already committed for other reasons.
+
+---
+
+## D-0022 — two-tier access: signed share tokens for demo consumption, Entra ID deferred for the console
+
+Date: 2026-08-22 · Session 6 · Status: accepted (partial -- console auth still deferred)
+
+Context:  This is the auth decision flow.md has flagged as open since
+          session 1's `/health` endpoint. The first real route
+          (`POST /api/v1/demo/{token}/ask`) needed an access model
+          before it could ship.
+Decision: Prospect-facing demo access uses a signed, time-limited
+          token (`poc/tokens.py`, itsdangerous `URLSafeTimedSerializer`)
+          embedding the session_id -- no login, no account, just
+          possession of a link. The SE console that will eventually
+          create and manage these sessions gets real Entra ID
+          (OIDC/PKCE via MSAL) once session 8 stands up Azure
+          infrastructure to authenticate against -- that piece
+          remains explicitly deferred, not built here.
+Why:      These are two different trust models for two different
+          people. A prospect clicking a link a salesperson sent them
+          is proving they received the link, not proving an identity
+          -- exactly matching the original report's "leave-behind
+          sandbox link the prospect can revisit" requirement. An SE
+          creating and managing sessions needs real account-level
+          auth. Building a full OIDC flow now, before there's an
+          Entra ID tenant to authenticate against (that's session 7-8
+          Azure work), would mean building against nothing real to
+          test against. itsdangerous is a tiny, well-audited,
+          dependency-light library -- appropriate weight for "proves
+          possession of a link," not "proves identity."
+Rejected: Building the console's Entra ID auth now, ahead of having
+          Azure infrastructure to point it at -- would be
+          unverifiable exactly the way the session 2 Alembic
+          migration was unverifiable before a live database existed,
+          except with no clear "verify on Aaron's machine" path
+          since Entra ID requires an actual tenant, not just Docker.
+Revisit:  Session 8, when Azure infrastructure exists and Entra ID
+          app registration becomes possible to actually test against.
+
+---
+
+## D-0023 — max_tokens for classify_scope raised to 8192 after evidenced truncation
+
+Date: 2026-08-22 · Session 6 (post-hoc, found via Aaron's live run) · Status: fixed
+
+Context:  D-0016's diagnostic logging (added in session 4) paid off
+          directly here: a live run against a 35-item batch reported
+          `output_tokens=4096, Raw response text was: ''` -- output
+          tokens exactly at the (then) max_tokens ceiling, with zero
+          extracted text. That specific combination -- full token
+          budget consumed, nothing in the text-typed content block --
+          points at one cause: the model spent its entire budget on
+          internal reasoning for this moderately complex 35-item
+          classification and was cut off before ever emitting the
+          JSON answer. This is different from D-0014 (a code-fence
+          the parser didn't strip) and different from D-0016's first
+          empty-response sighting (which self-resolved on retry,
+          plausibly a transient generation issue) -- this run gave
+          hard evidence of a specific, repeatable cause.
+Decision: Raised `max_tokens` for the classify_scope call from 4096 to
+          8192. Also sharpened the diagnostic: when a JSONDecodeError
+          fires AND output_tokens is at or above the (new) ceiling,
+          the printed message now says so explicitly -- "likely
+          truncated mid-reasoning before any JSON was emitted" --
+          instead of leaving that inference to be re-derived by hand
+          each time, the way it had to be this time.
+Why:      This is the direct payoff of investing in diagnostics
+          (D-0016) instead of guessing again (the lesson from D-0014).
+          The fix itself is simple -- more headroom -- but it's a
+          fix grounded in specific evidence from a real run, not
+          speculation. The sharpened diagnostic means the next time
+          this exact signature appears (if 8192 ever proves
+          insufficient for a larger batch), it's self-diagnosing on
+          the first read instead of requiring another round of
+          "what does the raw output actually look like."
+Rejected: Retrying automatically on empty response -- a reasonable
+          idea in general, but premature here: adding retry logic
+          before confirming whether 8192 tokens resolves the issue
+          would make it harder to tell, on the next occurrence,
+          whether the retry masked a real problem or the token
+          increase actually fixed it. Worth reconsidering if 8192
+          proves insufficient.
+Revisit:  If this exact "output_tokens at ceiling, empty text" pattern
+          recurs even at 8192, that's a strong signal to either batch
+          scope-classification into smaller chunks (fewer items per
+          call, more calls) or investigate whether the Anthropic SDK
+          call should explicitly disable extended thinking for this
+          specific, low-creativity classification task.
+
+---
+
+## D-0024 — scope classification batched into groups of 10, replacing the single-call design
+
+Date: 2026-08-22 · Session 6 (post-hoc, found via a second live run) · Status: fixed
+
+Context:  D-0023 raised max_tokens from 4096 to 8192 on the theory
+          that the model needed more room to reason before emitting
+          JSON. Aaron's very next run reproduced the identical
+          signature -- output_tokens exactly at the ceiling (8192
+          this time, 4096 the time before), text empty -- on a
+          33-item batch. Two occurrences at two different ceilings,
+          both landing exactly on the ceiling, is strong evidence that
+          "not enough tokens" was the wrong diagnosis: the model's
+          reasoning appears to scale to consume whatever budget it's
+          given for a batch this size, rather than converging and
+          leaving headroom. Raising the number a third time had no
+          principled reason to behave differently.
+Decision: `make_classify_scope` now splits `signals` into batches of
+          `_SCOPE_BATCH_SIZE = 10` and calls the model once per batch
+          (`_classify_batch`), each with its own 2048-token budget --
+          smaller, not larger, than the single-batch design's ceiling.
+          A batch that fails to parse only marks that batch's ~10
+          items as NEEDS_CLARIFICATION; other batches are unaffected.
+          Proven with a test that fails one specific batch out of
+          three (25 items total) and asserts the other two batches'
+          items came through correctly classified.
+Why:      A smaller task per call is a more direct fix for "the model
+          is over-deliberating" than a bigger budget -- if the
+          runaway reasoning scales with item count or with the
+          cognitive complexity of judging many nuanced items at once,
+          shrinking the batch attacks the actual mechanism instead of
+          just giving it more room to do the same thing. The fault
+          isolation is a genuine secondary benefit, not just a side
+          effect: previously, one malformed response meant every
+          single extracted item in the whole transcript lost its real
+          scope classification; now a bad batch costs at most 10
+          items, and every other batch's real, useful classification
+          survives.
+Rejected: Raising max_tokens a third time (e.g. to 16384) -- rejected
+          specifically because the evidence (two failures, two
+          different ceilings, both exactly at the ceiling) argues
+          against "more budget" being the actual fix, not merely
+          "not yet tried enough."
+Revisit:  If batches of 10 still occasionally hit their 2048-token
+          ceiling with empty output, that would be strong evidence the
+          issue isn't item count at all, and worth investigating
+          whether the Anthropic SDK call needs to explicitly disable
+          extended thinking for this task, rather than continuing to
+          shrink batch size indefinitely.

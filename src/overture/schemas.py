@@ -103,6 +103,26 @@ class SolutionBrief(BaseModel):
     requirements: list[Requirement] = Field(default_factory=list)
 
 
+class Chunk(BaseModel):
+    """A segment of a DiscoverySession's transcript, embedded for retrieval.
+
+    Populated by poc/ingestion.py, stored via db/repository.py, queried
+    via poc/retrieval.py. `embedding` length must equal
+    constants.EMBEDDING_DIM -- not enforced here at the Pydantic level
+    (that constant lives in constants.py to avoid a schemas->constants
+    import for a single field), but is enforced at the database level
+    by the pgvector column width in db/models.py.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4)
+    session_id: uuid.UUID
+    chunk_index: int = Field(ge=0)
+    text: str = Field(min_length=1)
+    embedding: list[float]
+
+
 class DemoConfig(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

@@ -44,6 +44,13 @@ class Settings(BaseSettings):
     azure_openai_deployment: str | None = None
     azure_openai_api_version: str = "2024-10-21"
 
+    # --- Demo share tokens --------------------------------------------
+    # See poc/tokens.py D-0022. The local dev default is intentionally
+    # obviously-a-placeholder so nobody mistakes it for a real secret
+    # in a screenshot; production deployment (session 7+) sources this
+    # from Azure Key Vault instead of .env.
+    share_token_secret: str = "local-dev-only-placeholder-do-not-use-in-production"
+
 
 @lru_cache
 def get_settings() -> Settings:

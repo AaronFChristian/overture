@@ -10,6 +10,7 @@ same split used for the Alembic migration in session 2.
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from overture.db import models as db_models
+from overture.schemas import Chunk as ChunkSchema
 from overture.schemas import DemoConfig as DemoConfigSchema
 from overture.schemas import DiscoverySession as DiscoverySessionSchema
 from overture.schemas import Requirement as RequirementSchema
@@ -86,3 +87,20 @@ async def persist_demo_config(db: AsyncSession, config: DemoConfigSchema) -> Non
     """Stage a DemoConfig row. Does not commit -- same contract as
     persist_extraction_result above."""
     db.add(db_models.DemoConfig(**_demo_config_to_kwargs(config)))
+
+
+def _chunk_to_kwargs(chunk: ChunkSchema) -> dict[str, object]:
+    """Pure mapping, no DB access -- mirrors the other _*_to_kwargs functions."""
+    return {
+        "id": chunk.id,
+        "session_id": chunk.session_id,
+        "chunk_index": chunk.chunk_index,
+        "text": chunk.text,
+        "embedding": chunk.embedding,
+    }
+
+
+async def persist_chunks(db: AsyncSession, chunks: list[ChunkSchema]) -> None:
+    """Stage Chunk rows. Does not commit -- same contract as the others above."""
+    for chunk in chunks:
+        db.add(db_models.Chunk(**_chunk_to_kwargs(chunk)))

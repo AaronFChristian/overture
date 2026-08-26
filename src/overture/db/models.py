@@ -15,10 +15,12 @@ about the database for this to work.
 import uuid
 from datetime import datetime
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import ForeignKey, Text, func
 from sqlalchemy.dialects.postgresql import ARRAY, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from overture.constants import EMBEDDING_DIM
 from overture.db.base import Base
 
 
@@ -37,6 +39,9 @@ class DiscoverySession(Base):
         back_populates="session", cascade="all, delete-orphan", uselist=False
     )
     demo_configs: Mapped[list["DemoConfig"]] = relationship(
+        back_populates="session", cascade="all, delete-orphan"
+    )
+    chunks: Mapped[list["Chunk"]] = relationship(
         back_populates="session", cascade="all, delete-orphan"
     )
 
@@ -96,3 +101,17 @@ class DemoConfig(Base):
     validation_errors: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
 
     session: Mapped["DiscoverySession"] = relationship(back_populates="demo_configs")
+
+
+class Chunk(Base):
+    __tablename__ = "chunks"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("discovery_sessions.id", ondelete="CASCADE"), index=True
+    )
+    chunk_index: Mapped[int] = mapped_column(nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    embedding: Mapped[list[float]] = mapped_column(Vector(EMBEDDING_DIM), nullable=False)
+
+    session: Mapped["DiscoverySession"] = relationship(back_populates="chunks")

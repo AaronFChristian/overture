@@ -26,6 +26,7 @@ from overture.schemas import (
     ScopeClassification,
     SolutionBrief,
 )
+from overture.text_utils import split_paragraphs
 
 
 async def segment(state: ExtractionState) -> dict[str, list[str]]:
@@ -39,8 +40,7 @@ async def segment(state: ExtractionState) -> dict[str, list[str]]:
     transcript for maximum context. See flow.md open threads.
     """
     raw = state["transcript"]
-    segments = [chunk.strip() for chunk in raw.split("\n\n") if chunk.strip()]
-    return {"segments": segments or [raw.strip()]}
+    return {"segments": split_paragraphs(raw)}
 
 
 def make_signal_extractor(
@@ -89,18 +89,25 @@ def make_signal_extractor(
     return _extract
 
 
+_SCOPE_BATCH_SIZE = 10
+
+
 def make_classify_scope(
     provider: LLMProvider,
 ) -> Callable[[ExtractionState], Awaitable[dict[str, list[RequirementSchema]]]]:
     """Build the scope-classification node.
 
-    Batches all extracted signals into a single call rather than one
-    call per requirement -- a transcript producing 30 requirements
-    would otherwise mean 30 round trips. The response is matched back
-    to requirements strictly by index; if the model returns the wrong
-    number of labels, every requirement falls back to
-    NEEDS_CLARIFICATION rather than risk a silent off-by-one
-    misalignment between label and requirement.
+    Splits signals into batches of _SCOPE_BATCH_SIZE rather than one
+    call for the whole set. This replaced an earlier single-batch
+    design after real evidence (D-0024) that a 33-35 item batch
+    reliably drove the model into runaway internal reasoning that
+    consumed the entire token budget twice in a row, at two different
+    ceilings (4096 and 8192), with zero output either time -- simply
+    raising max_tokens a third time was not going to resolve a pattern
+    that scaled with whatever ceiling was given. Smaller batches give
+    the model a simpler task per call and, as a second benefit, isolate
+    failures: if one batch of 10 fails to parse, only those 10 items
+    fall back to NEEDS_CLARIFICATION, not the whole transcript's worth.
     """
 
     async def _classify(state: ExtractionState) -> dict[str, list[RequirementSchema]]:
@@ -108,62 +115,79 @@ def make_classify_scope(
         if not signals:
             return {"scope_classified": []}
 
-        items_text = "\n".join(f"{i}. {req.text}" for i, req in enumerate(signals))
-        prompt = SCOPE_CLASSIFICATION_PROMPT.format(count=len(signals), items=items_text)
-
-        result = await provider.complete(
-            system="You are a careful, conservative scoping assistant.",
-            messages=[Message(role="user", content=prompt)],
-            # 39 short labels needs very few tokens, but this is sized
-            # generously (not the original 1024) specifically so any
-            # stray explanation text the model adds despite
-            # instructions doesn't truncate the JSON array mid-response
-            # -- a truncated array is a JSONDecodeError, which looks
-            # identical to a fenced response until you print the raw
-            # text (see the diagnostic logging below, added after this
-            # exact failure mode was hit on a real 39-item batch).
-            max_tokens=4096,
-        )
-
-        labels: list[str] | None = None
-        try:
-            parsed = json.loads(strip_code_fences(result.text))
-            if isinstance(parsed, list) and len(parsed) == len(signals):
-                labels = parsed
-            else:
-                got = len(parsed) if isinstance(parsed, list) else type(parsed).__name__
-                print(
-                    f"[overture] scope classification: parsed JSON but got {got} "
-                    f"items, expected {len(signals)} -- falling back to "
-                    "needs_clarification for all items in this batch.\n"
-                    f"Raw response was:\n{result.text}",
-                    file=sys.stderr,
-                )
-        except json.JSONDecodeError as exc:
-            print(
-                f"[overture] scope classification: failed to parse JSON ({exc}) "
-                "-- falling back to needs_clarification for all items in this "
-                f"batch.\nModel reported output_tokens={result.output_tokens}, "
-                f"input_tokens={result.input_tokens}.\n"
-                f"Raw response text was: {result.text!r}",
-                file=sys.stderr,
-            )
-            labels = None
-
         classified: list[RequirementSchema] = []
-        for i, req in enumerate(signals):
-            if labels is not None:
-                try:
-                    scope = ScopeClassification(labels[i])
-                except ValueError:
-                    scope = ScopeClassification.NEEDS_CLARIFICATION
-            else:
-                scope = ScopeClassification.NEEDS_CLARIFICATION
-            classified.append(req.model_copy(update={"scope": scope}))
+        for batch_start in range(0, len(signals), _SCOPE_BATCH_SIZE):
+            batch = signals[batch_start : batch_start + _SCOPE_BATCH_SIZE]
+            classified.extend(await _classify_batch(batch, batch_start, provider))
 
         return {"scope_classified": classified}
 
     return _classify
+
+
+async def _classify_batch(
+    batch: list[RequirementSchema], batch_start: int, provider: LLMProvider
+) -> list[RequirementSchema]:
+    items_text = "\n".join(f"{i}. {req.text}" for i, req in enumerate(batch))
+    prompt = SCOPE_CLASSIFICATION_PROMPT.format(count=len(batch), items=items_text)
+
+    result = await provider.complete(
+        system="You are a careful, conservative scoping assistant.",
+        messages=[Message(role="user", content=prompt)],
+        # 2048 is generous for a 10-item batch's JSON array alone
+        # (which needs perhaps 100 tokens); the real defense against
+        # runaway reasoning is the smaller batch size (D-0024), not a
+        # larger ceiling -- see the module docstring above.
+        max_tokens=2048,
+    )
+
+    labels: list[str] | None = None
+    try:
+        parsed = json.loads(strip_code_fences(result.text))
+        if isinstance(parsed, list) and len(parsed) == len(batch):
+            labels = parsed
+        else:
+            got = len(parsed) if isinstance(parsed, list) else type(parsed).__name__
+            print(
+                f"[overture] scope classification (items {batch_start}-"
+                f"{batch_start + len(batch) - 1}): parsed JSON but got {got} "
+                f"items, expected {len(batch)} -- falling back to "
+                "needs_clarification for this batch only.\n"
+                f"Raw response was:\n{result.text}",
+                file=sys.stderr,
+            )
+    except json.JSONDecodeError as exc:
+        likely_truncated = result.output_tokens >= 2048
+        hint = (
+            " (output_tokens hit the max_tokens ceiling with empty text -- "
+            "likely runaway reasoning even at this batch size; worth "
+            "investigating further if this recurs)"
+            if likely_truncated
+            else ""
+        )
+        print(
+            f"[overture] scope classification (items {batch_start}-"
+            f"{batch_start + len(batch) - 1}): failed to parse JSON ({exc}) "
+            "-- falling back to needs_clarification for this batch only.\n"
+            f"Model reported output_tokens={result.output_tokens}, "
+            f"input_tokens={result.input_tokens}.{hint}\n"
+            f"Raw response text was: {result.text!r}",
+            file=sys.stderr,
+        )
+        labels = None
+
+    classified: list[RequirementSchema] = []
+    for i, req in enumerate(batch):
+        if labels is not None:
+            try:
+                scope = ScopeClassification(labels[i])
+            except ValueError:
+                scope = ScopeClassification.NEEDS_CLARIFICATION
+        else:
+            scope = ScopeClassification.NEEDS_CLARIFICATION
+        classified.append(req.model_copy(update={"scope": scope}))
+
+    return classified
 
 
 async def assemble_brief(state: ExtractionState) -> dict[str, SolutionBrief]:

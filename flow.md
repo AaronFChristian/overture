@@ -234,6 +234,51 @@ overture/cli.py :: run_extract(transcript_path)
 
 ---
 
+## Trace: POST /api/v1/demo/{token}/ask (first real HTTP route besides /health)
+
+```
+overture/api/demo.py :: ask(token, body, db=Depends(get_db))
+  overture/poc/tokens.py :: verify_share_token(token, settings.share_token_secret)
+    -- FAILS FAST, no DB call yet: bad/expired token -> 404
+       immediately (see tests/test_demo_route.py, proves this without
+       a live Postgres instance)
+
+  overture/poc/embeddings.py :: HashingEmbedder().embed(question)
+    -- same deterministic embedder used at ingestion time (D-0021),
+       so query and stored chunks are comparable vectors
+
+  overture/poc/retrieval.py :: retrieve_top_chunks(db, session_id, query_embedding, top_k=3)
+    pgvector cosine_distance ORDER BY, LIMIT 3
+    -- empty result -> 404 "no content indexed"
+
+  SELECT ... FROM demo_configs WHERE session_id = ... ORDER BY id DESC LIMIT 1
+    -- most recent DemoConfig for this session; system_prompt="" if none exists
+
+  overture/providers/factory.py :: get_llm_provider()
+    -- real provider, not a fake -- SAME "first real call" pattern as
+       every other session's first live-API touch point
+
+  overture/poc/runtime.py :: answer_question(question, system_prompt, chunks, provider)
+    builds numbered context (position-indexed, NOT chunk_index --
+      see test_answer_question_uses_position_not_chunk_index_for_citation_numbers)
+    provider.complete(...) -- ONE LLM call, the only place in the
+      codebase where an LLM's free-text prose reaches a prospect
+      directly
+
+  returns AskResponse(answer=..., citations=[chunk texts])
+```
+
+---
+
+## Trace: overture ask <token> <question> (CLI equivalent of the HTTP route)
+
+Same logic as the route above, called directly rather than through
+FastAPI -- exists so this path can be exercised from a terminal
+without running `uvicorn` first, matching D-0013's reasoning for why
+the CLI came before the route in the first place.
+
+---
+
 ## AI surface by phase
 
 What the AI (me, in this project) was allowed to write or decide, per
@@ -247,11 +292,21 @@ actually design vs generate."
 | 3 | Full extraction graph: 5 node functions, prompts, span-location/parsing logic, graph builder, 4 end-to-end tests against a fake provider | Did not add an LLM call to `assemble_brief` even though a prose summary would look more polished — see D-0010. Did not attempt partial index alignment on a scope-classification length mismatch — see D-0012. Zero real LLM calls made or tested here; all graph logic verified against a FakeProvider, never api.anthropic.com. |
 | 4 | Persistence layer (pure mapping function + async writer), CLI entry point, 3 synthetic transcripts, 2 tests for the pure mapping function | Did not write a test claiming to prove `persist_extraction_result` works against real Postgres — it can't be, from this environment. Did not wire an `AsyncPostgresSaver` checkpointer — deferred, see open threads. Zero real Claude calls made from this environment; the CLI is verified structurally (help text, argument validation, missing-file handling) but not against api.anthropic.com — that first real call is Aaron's step. A real bug was found on Aaron's first live run (D-0014, missing code-fence stripping in classify_scope) and fixed with a proven regression test, plus a second real gap (D-0015, stale `.env` DATABASE_URL) that was a process issue, not code — both closed out by session's end. |
 | 5 | Blueprint catalog (3 fixed blueprints), deterministic scoring (`select_blueprint`), LLM-assisted slot filling (`fill_config`), the LLM-free config validator (`validate_config`), persistence for DemoConfig, CLI wiring, 18 new tests | Did not let the LLM choose which blueprint to use, or which tools attach to one — see D-0017. Did not put validation logic inside `fill_config` even though it would have been fewer files — see D-0018. Wrote a test that greps `validator.py`'s own source to prove it never imports a provider, rather than trusting a comment to stay true. `fill_config`'s real-API behavior is untested here — same gap as sessions 1-4's first LLM-touching code, closed by Aaron's next live run. |
+| 6 | Deterministic hashing embedder, chunking/ingestion, pgvector-backed retrieval (pure ranking + live query split), signed share tokens, the grounded answer function with position-based citations, the first HTTP route besides `/health`, `overture ask` CLI command, second Alembic migration, 27 new tests | Did not reach for a third paid embeddings API — see D-0021. Did not build full account-based auth for the prospect-facing route — a signed token proves possession of a link, not identity, and that's a deliberate, narrower guarantee — see D-0022. Did catch its own introspection mistake mid-session (a route-listing script that looked at the wrong Starlette attribute) and replaced it with a real TestClient-based check plus a permanent regression test, rather than reporting an unverified guess as fact. |
 
 ---
 
 ## Open threads for next session
 
+- `retrieve_top_chunks` (the pgvector cosine_distance query) and the
+  `/api/v1/demo/{token}/ask` route's full happy path (valid token,
+  real chunks, real LLM answer) have never run against a live
+  database or a live model in this environment — same verification
+  gap every session's new DB/LLM-touching code has had at handoff.
+  Aaron's next `overture extract` + `overture ask` pair is what
+  closes it.
+- Migration 0002 (chunks table + `CREATE EXTENSION vector`) is
+  verified via offline SQL generation only, same caveat as 0001.
 - `fill_config` and the validator have never run against real Claude
   output — same verification gap every new LLM-touching module in
   this project has had at the point it's handed off. Aaron's next
@@ -264,6 +319,8 @@ actually design vs generate."
   — `cli.py` still calls it with `checkpointer=None`, so a failure
   mid-extraction can't currently be resumed, it just fails and the
   whole transcript needs re-running.
+- Console-level auth (Entra ID) remains deferred to session 8, per
+  D-0022 — intentional, not forgotten.
 - No auth exists yet. `/health` is intentionally public; the CLI has
   no auth model at all (it's local-only, reads Aaron's own `.env`).
   The first HTTP route (session 6) needs an explicit auth decision
