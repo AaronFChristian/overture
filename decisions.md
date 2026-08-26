@@ -1415,3 +1415,237 @@ Revisit:  Not expected to change unless this project's build pipeline
           runners, once D-0036/D-0037's tenant restriction lifts and
           OIDC deploy is usable), at which point the pin becomes
           unnecessary but remains harmless to keep.
+
+---
+
+## D-0040 — frontend lives in the same repo, Vite + React + TS, no CSS framework
+
+Date: 2026-08-26 · Session 9 · Status: accepted
+
+Context:  Needed to decide where the frontend lives (same repo vs
+          separate project) and what it's built with. Vite + React +
+          TypeScript was already the named stack from before session
+          1; the open questions were repo structure and styling
+          approach.
+Decision: `frontend/` directory in this same repo, using Vite's
+          official `react-ts` template as the starting scaffold, with
+          the template's demo boilerplate (App.css, the counter
+          example, the logo assets) stripped out. Styling is plain
+          CSS (`index.css`), no Tailwind, no component library. API
+          base URL is a build-time env var (`VITE_API_BASE_URL`),
+          defaulting to `http://localhost:8000` for local dev and
+          expected to be baked in at build time to a same-origin
+          relative path in production, once frontend and backend are
+          served from the same Container App.
+Why:      Same repo means one commit history tells the whole story,
+          and there's exactly one deploy target for both halves
+          eventually (D-0034's ownership-split pattern extends
+          naturally: Terraform still owns infrastructure, a single
+          container still gets built and deployed, it just now
+          contains a static frontend bundle alongside the API). No
+          CSS framework matches the minimum-resources principle
+          applied everywhere else in this project (D-0021's embedder,
+          D-0033's GHCR-over-ACR) -- a demo page with a title, some
+          buttons, and a chat log doesn't need a design system, and
+          skipping one keeps the bundle small (74KB gzipped for the
+          whole app, confirmed via a real `npm run build`).
+Rejected: A separate frontend repository -- adds a second place to
+          look for history and a second CI/deploy pipeline to build
+          for no benefit this project's scale justifies. Tailwind or
+          a component library -- reasonable choices for a larger app;
+          overhead without payoff here.
+Revisit:  If the frontend grows substantially (many pages, a design
+          system worth having), reconsider the no-framework CSS
+          choice specifically -- the same-repo decision is expected to
+          hold regardless.
+
+---
+
+## D-0041 — GET /api/v1/demo/{token} added, system_prompt deliberately excluded from its response
+
+Date: 2026-08-26 · Session 9 · Status: accepted
+
+Context:  The frontend needs to know a demo's blueprint name and
+          sample questions before the first question is asked, to
+          render the page. No endpoint returned this -- `POST
+          .../ask` was the only route, and it doesn't help until
+          there's already a question to send.
+Decision: Added `GET /api/v1/demo/{token}`, returning `blueprint_id`,
+          `blueprint_name` (looked up from the fixed catalog in
+          `poc/blueprints.py`, not stored redundantly), and
+          `sample_questions`. `system_prompt` is never included in
+          this response.
+Why:      `system_prompt` is the internal instruction text steering
+          the LLM's behavior for this demo -- it's operationally
+          useful to the backend and to `validate_config`'s checks,
+          but has no reason to ever reach a prospect's browser. This
+          is the same instinct as D-0026 (don't let something
+          sensitive leak into a place it doesn't need to be) applied
+          to prompt content instead of credentials -- not a secret in
+          the security sense, but not something to expose just
+          because it's technically retrievable. Refactored the
+          existing `ask` route to share a `_load_demo_config` helper
+          with this new route rather than duplicating the query,
+          and changed a real behavior in the process: a missing
+          `DemoConfig` now correctly 404s instead of silently
+          answering with an empty system prompt, which is more
+          honest than pretending an unconfigured demo can answer
+          anything.
+Rejected: Including `system_prompt` and letting the frontend just
+          not render it -- technically works, but "don't send it"
+          is a stronger guarantee than "the current frontend chooses
+          not to display it," and costs nothing to do properly.
+Revisit:  If a future admin/preview surface (the SE console, session
+          10) legitimately needs to see the system prompt for
+          debugging, that's a different, authenticated route --
+          not a reason to loosen this public one.
+
+---
+
+## D-0042 — CompletionResult exposes stop_reason and content_block_types after the batching fix recurred
+
+Date: 2026-08-26 · Session 9 (post-hoc, found via Aaron's real extraction run) · Status: diagnostic added, root cause still open
+
+Context:  D-0024's batching fix (session 6) was not a full fix, just a
+          strong mitigation -- Aaron's session 9 extraction run showed
+          2 of 4 scope-classification batches still hitting the exact
+          "output_tokens at ceiling, empty text" signature, at the
+          same batch size (10) that was supposed to have resolved it.
+          D-0024's own revisit clause anticipated this exact
+          possibility and named the next step: find out whether a
+          hidden reasoning/thinking content block is consuming the
+          budget before any text block starts, rather than guessing a
+          fifth fix blind.
+Decision: `CompletionResult` gained two new fields: `stop_reason` (the
+          provider's own reported reason generation stopped -- Claude:
+          `response.stop_reason`; Azure OpenAI: `choice.finish_reason`)
+          and `content_block_types` (Claude: the literal list of
+          content block types the response actually contained;
+          Azure OpenAI: `["text"]` or `[]`, since it has no equivalent
+          concept). Both providers updated to populate them. The
+          scope-classification diagnostic in `nodes.py` now prints
+          both directly, replacing the old `output_tokens >= 2048`
+          heuristic that could only *infer* truncation, never confirm
+          what the response actually contained.
+Why:      The old diagnostic's guess ("likely runaway reasoning") was
+          exactly that -- a guess dressed up as a hint, with no way to
+          confirm or refute it from the data available. This project
+          has held every other bug fix to a standard of real evidence
+          (D-0014's raw response text, D-0029's policy query, D-0036's
+          direct confirmation test) -- this diagnostic was the one
+          remaining place still operating on inference. `stop_reason`
+          and `content_block_types` are the exact two pieces of
+          information that would finally distinguish "the model
+          produced a `thinking` block and never reached text" from
+          "something else entirely" the next time this fires.
+Rejected: A fifth blind fix (raising max_tokens again, shrinking batch
+          size further, or explicitly trying to disable extended
+          thinking without evidence it's even happening) -- would
+          repeat the exact mistake D-0023 already made once and D-0024
+          corrected: iterating by hypothesis instead of by evidence.
+Revisit:  The moment this fires again with the new diagnostic active,
+          `content_block_types` tells us definitively whether a
+          non-text block is present. If it shows something like
+          `["thinking"]` with no `"text"` entry, the real fix is
+          almost certainly an explicit `thinking={"type": "disabled"}`
+          parameter on the Anthropic call (not yet added -- unverified
+          whether that parameter exists on this SDK version, so not
+          worth adding speculatively before the diagnostic confirms
+          it's actually needed).
+
+---
+
+## D-0043 — fixed a genuinely flaky token-tampering test (base64 trailing-character redundancy)
+
+Date: 2026-08-26 · Session 9 (post-hoc, found via a real ~1-in-15 failure on Aaron's machine) · Status: fixed and proven
+
+Context:  `test_verify_rejects_tampered_token` mutates the last
+          character of a signed share token and asserts verification
+          then fails. On one of Aaron's runs, it failed the assertion
+          -- the tampered token verified successfully, returning the
+          correct original session_id. Root cause, confirmed by a
+          direct 10,000-iteration simulation of the actual mechanism
+          (not assumed): base64 encoding has trailing-padding
+          redundancy -- when the encoded byte length isn't a clean
+          multiple of 3, the final character has unused bits, so
+          multiple different characters at that exact position can
+          decode to identical underlying bytes. Measured directly:
+          ~6.6% of last-character tamper attempts leave the real
+          signature bytes completely unchanged, meaning the token
+          genuinely wasn't tampered at the byte level despite the
+          text differing. The test's flakiness tracked this rate
+          almost exactly.
+Decision: Changed the tamper target from the token's last character
+          to a fixed position (index 5), safely inside the payload
+          segment and far from any segment's trailing boundary.
+          Verified the fix by running the test 200 times in a row
+          (each run uses a fresh random `uuid4()` session_id, so this
+          genuinely exercises 200 different tokens, not one cached
+          result) -- 200/200 passed.
+Why:      A test that fails ~1 time in 15 isn't a broken assertion,
+          it's a test whose premise ("tampering any character breaks
+          verification") was subtly wrong for one specific character
+          position. Fixing the position, not loosening the assertion,
+          keeps the test's actual claim intact and true. Verifying
+          with 200 runs rather than trusting a single green run
+          matters specifically because the original bug's whole
+          nature was "usually passes, sometimes doesn't" -- a single
+          rerun proves nothing about a probabilistic bug.
+Rejected: Tampering multiple characters at once, or using a
+          fixed/deterministic session_id instead of `uuid4()` --
+          both would technically dodge the specific edge case, but
+          the actual root cause is deterministic given the position
+          (independent of which session_id or how many characters),
+          so fixing the position is the more direct, honest fix.
+Revisit:  Not expected to change. If itsdangerous's underlying signing
+          algorithm ever changes in a way that shifts the token's
+          segment structure, re-verify that index 5 still lands safely
+          inside a non-boundary position.
+
+---
+
+## D-0044 — CORS middleware missing entirely, invisible to every prior test tool used
+
+Date: 2026-08-26 · Session 9 (post-hoc, found via a real browser) · Status: fixed and proven
+
+Context:  The demo page failed with a generic "Something went wrong"
+          on its very first real-browser test -- the demo config
+          fetch never returned a usable response. Root cause: no CORS
+          middleware existed anywhere in `main.py`. The frontend
+          (`localhost:5173`) and backend (`localhost:8000`) are
+          different origins to a browser, and browsers block
+          cross-origin requests by default unless the server
+          explicitly opts in. Every prior verification of this route
+          -- FastAPI's `TestClient` in dozens of tests, `curl` used
+          throughout sessions 4-8 -- never enforces CORS at all, so
+          this gap was completely invisible until the first real
+          browser touched it.
+Decision: Added `CORSMiddleware`, gated behind
+          `settings.environment == "local"`, allowing only
+          `http://localhost:5173` (the Vite dev server's fixed
+          default port), `GET`/`POST` methods, and a `Content-Type`
+          header. Two new tests prove it: one confirms the allowed
+          origin is genuinely reflected back, one confirms an
+          arbitrary origin is NOT allowed (the middleware isn't
+          silently wide-open). Proved the regression test itself
+          catches the real bug by reverting the fix and watching the
+          exact symptom reproduce (a missing
+          `access-control-allow-origin` header) before restoring it.
+Why:      This is the sharpest possible illustration of a lesson this
+          project has now hit from several different angles (D-0025's
+          Terraform, D-0034's container image, D-0039's build
+          platform): a test suite only proves what it actually
+          exercises. Nothing about this bug was subtle or hard to
+          fix once found -- it was invisible specifically because
+          every verification tool used up to this point structurally
+          could not have caught it, not because anyone was careless.
+Rejected: Allowing all origins (`allow_origins=["*"]`) as a quick
+          universal fix -- would work locally but is meaningfully
+          worse security posture for no real benefit, and gated to
+          local-only means it's a complete non-issue in production
+          anyway (same-origin serving, D-0040, means CORS is never
+          even evaluated there).
+Revisit:  If the frontend's dev port is ever changed from Vite's
+          5173 default, or if local development starts running the
+          frontend from a different host, update the allowed origin
+          to match.

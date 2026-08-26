@@ -347,41 +347,41 @@ actually design vs generate."
 | 5 | Blueprint catalog (3 fixed blueprints), deterministic scoring (`select_blueprint`), LLM-assisted slot filling (`fill_config`), the LLM-free config validator (`validate_config`), persistence for DemoConfig, CLI wiring, 18 new tests | Did not let the LLM choose which blueprint to use, or which tools attach to one — see D-0017. Did not put validation logic inside `fill_config` even though it would have been fewer files — see D-0018. Wrote a test that greps `validator.py`'s own source to prove it never imports a provider, rather than trusting a comment to stay true. `fill_config`'s real-API behavior is untested here — same gap as sessions 1-4's first LLM-touching code, closed by Aaron's next live run. |
 | 6 | Deterministic hashing embedder, chunking/ingestion, pgvector-backed retrieval (pure ranking + live query split), signed share tokens, the grounded answer function with position-based citations, the first HTTP route besides `/health`, `overture ask` CLI command, second Alembic migration, 27 new tests | Did not reach for a third paid embeddings API — see D-0021. Did not build full account-based auth for the prospect-facing route — a signed token proves possession of a link, not identity, and that's a deliberate, narrower guarantee — see D-0022. Did catch its own introspection mistake mid-session (a route-listing script that looked at the wrong Starlette attribute) and replaced it with a real TestClient-based check plus a permanent regression test, rather than reporting an unverified guess as fact. Two real bugs found on Aaron's live re-run of this session's fix: a max_tokens ceiling that scaled with itself twice (D-0023), root-caused and replaced with batching + fault isolation (D-0024) rather than a third blind ceiling increase. |
 | 7 | Full Terraform landing zone: resource group, Postgres Flexible Server with pgvector, Container Apps environment (empty), Key Vault with dual access policies, managed identity, Application Insights, budget alert; up/down wrapper scripts | Did not put the Anthropic API key anywhere in Terraform state or `.tfvars` — see D-0026. Did not reach for private networking despite it being the "more correct" production answer — see D-0027, a consciously named tradeoff, not an oversight. **Could not verify any of this by execution** — no sandbox network access to Azure or the Terraform registry. This is the first session where "I wrote it and reviewed it carefully" is the actual limit of what happened on my end, not "I wrote it and proved it," and that limit is stated here explicitly rather than left implicit. Three real infrastructure bugs found on Aaron's actual applies (wrong region, unregistered resource provider, an unverified zone pin) — each root-caused with real Azure evidence (a policy query, an explicit error message, an informed hypothesis honestly labeled as such) rather than repeated guessing, same discipline as every app-layer bug fix in prior sessions, now proven to extend to infrastructure too. |
-| 8 | Dockerfile, OpenTelemetry wiring (real Python, verified — 2 new tests, 69/69 total passing), GitHub Actions OIDC federation in Terraform, the Container App resource itself, deploy workflow YAML | Deliberately split what could be verified from what couldn't, same as session 7: OTel wiring got the full lint/mypy/pytest treatment because it's real Python; the Dockerfile, OIDC Terraform, and GitHub Actions workflow got careful review but not execution, same honest limit as session 7's HCL. Did not let a `terraform apply` silently overwrite whatever image GitHub Actions had deployed — see D-0034's `ignore_changes` on the container image. Did not build the user-facing MSAL login this session despite the original plan naming "session 8" for identity — deferred to session 9 on purpose, since there's no frontend yet to log into (see the session-start scoping note, and D-0022's original deferral). |
+| 8 | Dockerfile, OpenTelemetry wiring (real Python, verified — 2 new tests, 69/69 total passing), GitHub Actions OIDC federation in Terraform, the Container App resource itself, deploy workflow YAML | Deliberately split what could be verified from what couldn't, same as session 7: OTel wiring got the full lint/mypy/pytest treatment because it's real Python; the Dockerfile, OIDC Terraform, and GitHub Actions workflow got careful review but not execution, same honest limit as session 7's HCL. Did not let a `terraform apply` silently overwrite whatever image GitHub Actions had deployed — see D-0034's `ignore_changes` on the container image. Did not build the user-facing MSAL login this session despite the original plan naming "session 8" for identity — deferred to session 9 on purpose, since there's no frontend yet to log into (see the session-start scoping note, and D-0022's original deferral). Five real problems found and fixed on Aaron's actual applies/deploys that session (missing Key Vault secret ordering, a blocked Entra ID tenant policy confirmed via direct test, a Postgres zone-reconciliation error, an orphaned Container App resource conflict, an Apple-Silicon-vs-amd64 build mismatch) — every one root-caused with real evidence, and the whole app ended the session genuinely live and verified (`curl .../health` returning 200 from Azure). |
+| 9 | Frontend (Vite + React + TypeScript): `/demo/:token` chat page, sample questions, citations, error states; new `GET /api/v1/demo/{token}` backend endpoint with a real behavior change (missing config now 404s instead of silently answering) | Deliberately scoped to the prospect-facing demo page only — the SE console needs a new HTTP-triggered extraction endpoint that doesn't exist yet (extraction is still CLI-only, D-0013), and building both a new backend surface and a new frontend in one session risked finishing neither cleanly; console explicitly deferred to session 10. Did not include `system_prompt` in the new endpoint's response even though it would have been one field simpler — see D-0041. Unlike sessions 7-8, this session's frontend work WAS genuinely verified by execution: real `npm run build` (0 errors), real `npm run lint` (0 warnings, after fixing one legitimate `set-state-in-effect` warning by restructuring rather than suppressing), and the dev server actually started and served a 200. |
 
 ---
 
 ## Open threads for next session
 
-- **Session 8's Dockerfile, OIDC Terraform additions, Container App
-  resource, and GitHub Actions workflow are all unverified by
-  execution** — same limitation as session 7, for the same structural
-  reason (no sandbox network access to Docker, Azure, or GitHub).
-  Aaron's `terraform apply` + first manual workflow run are the real
-  first tests these get.
-- The GHCR package needs to be manually set to public after the
-  workflow's first run creates it (D-0033) — otherwise the Container
-  App will fail to pull the image with an auth error. Not yet
-  confirmed this manual step is actually sufficient in practice.
-- No proof yet that `azure-monitor-opentelemetry` actually delivers
-  telemetry to Application Insights correctly — the code is proven to
-  not crash and to stay inert locally (2 real tests), but the "does
-  it actually show up in App Insights when a real connection string
-  is set" question is unverified until the app is actually deployed
-  and generates real traffic.
-- User-facing Entra ID / MSAL login is still not built — explicitly
-  deferred to session 9, when there's a frontend to attach it to.
+- **The SE console does not exist yet.** Extraction is still CLI-only
+  (`overture extract`) — there's no HTTP route that lets a browser
+  trigger extraction, review the brief, or generate a config. Session
+  10 needs a new endpoint (something like `POST
+  /api/v1/sessions/extract`) before any console UI can be built
+  against it.
+- **No real auth on anything frontend-facing yet, and that's expected
+  to stay true.** The demo page's only protection is the share token
+  (D-0022) — appropriate for its threat model. The SE console, once
+  built, will need *some* access control, but real Entra ID/MSAL is
+  blocked by D-0036's confirmed tenant restriction — the console
+  likely needs the same toggle-based placeholder-auth pattern as
+  D-0037, not real MSAL, until that restriction lifts.
+- Frontend has no tests yet beyond "it builds and lints clean" — no
+  component tests, no API-mocking tests. Reasonable for a one-page
+  app at this size; worth reconsidering if the SE console adds
+  meaningfully more frontend logic in session 10.
+- `frontend/.env.local` (the real `VITE_API_BASE_URL` override) has
+  never been created or tested against a running local backend in
+  this environment — the dev server was verified to serve the app
+  shell, not verified end-to-end against a live FastAPI instance with
+  real data. Aaron's first `npm run dev` alongside `uvicorn` is what
+  closes that gap.
 - No `AsyncPostgresSaver` checkpointer wired into `build_graph()` yet
   — `cli.py` still calls it with `checkpointer=None`, so a failure
   mid-extraction can't currently be resumed, it just fails and the
   whole transcript needs re-running.
-- Console-level auth (Entra ID) remains deferred to session 8, per
-  D-0022 — intentional, not forgotten.
-- No auth exists yet. `/health` is intentionally public; the CLI has
-  no auth model at all (it's local-only, reads Aaron's own `.env`).
-  The first HTTP route (session 6) needs an explicit auth decision
-  logged before it ships.
 - `segment()` currently splits on blank lines only — no
   speaker-attribution awareness. Fine for the synthetic transcripts
-  used in testing; real discovery-call transcripts (session 4's
-  synthetic data batch) may need a better segmentation heuristic.
+  used in testing; real discovery-call transcripts may need a better
+  segmentation heuristic if this becomes a real limitation.

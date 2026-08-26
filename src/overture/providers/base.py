@@ -22,6 +22,20 @@ class CompletionResult(BaseModel):
     input_tokens: int
     output_tokens: int
     model: str
+    # Why generation stopped: "end_turn", "max_tokens", etc. Added
+    # specifically to disambiguate two very different failure modes
+    # that otherwise look identical from output_tokens/text alone --
+    # "genuinely truncated by the token ceiling" vs "the model decided
+    # it was done and produced nothing," which need different fixes.
+    # See decisions.md D-0042.
+    stop_reason: str | None = None
+    # What kind(s) of content block the response actually contained
+    # (Anthropic: "text", "thinking", etc; Azure OpenAI has no
+    # equivalent concept, so this is always ["text"] or [] there).
+    # This is the field that actually answers "did the model spend its
+    # whole budget on a thinking block and never reach text" instead
+    # of inferring it from token counts alone. See D-0042.
+    content_block_types: list[str] = []
 
 
 class LLMProvider(Protocol):

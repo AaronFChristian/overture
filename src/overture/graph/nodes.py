@@ -157,20 +157,14 @@ async def _classify_batch(
                 file=sys.stderr,
             )
     except json.JSONDecodeError as exc:
-        likely_truncated = result.output_tokens >= 2048
-        hint = (
-            " (output_tokens hit the max_tokens ceiling with empty text -- "
-            "likely runaway reasoning even at this batch size; worth "
-            "investigating further if this recurs)"
-            if likely_truncated
-            else ""
-        )
         print(
             f"[overture] scope classification (items {batch_start}-"
             f"{batch_start + len(batch) - 1}): failed to parse JSON ({exc}) "
             "-- falling back to needs_clarification for this batch only.\n"
             f"Model reported output_tokens={result.output_tokens}, "
-            f"input_tokens={result.input_tokens}.{hint}\n"
+            f"input_tokens={result.input_tokens}, "
+            f"stop_reason={result.stop_reason!r}, "
+            f"content_block_types={result.content_block_types}.\n"
             f"Raw response text was: {result.text!r}",
             file=sys.stderr,
         )

@@ -49,4 +49,6 @@ class AzureOpenAIProvider:
             input_tokens=usage.prompt_tokens if usage else 0,
             output_tokens=usage.completion_tokens if usage else 0,
             model=self._deployment,
+            stop_reason=choice.finish_reason,
+            content_block_types=["text"] if choice.message.content else [],
         )

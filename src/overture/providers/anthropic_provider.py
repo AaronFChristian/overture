@@ -37,4 +37,6 @@ class AnthropicProvider:
             input_tokens=response.usage.input_tokens,
             output_tokens=response.usage.output_tokens,
             model=self._model,
+            stop_reason=response.stop_reason,
+            content_block_types=[block.type for block in response.content],
         )

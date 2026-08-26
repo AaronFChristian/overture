@@ -21,3 +21,9 @@ def test_ask_route_rejects_invalid_token_without_touching_db() -> None:
 def test_ask_route_rejects_missing_question_field() -> None:
     response = client.post("/api/v1/demo/some-token/ask", json={})
     assert response.status_code == 422  # FastAPI's own request validation
+
+
+def test_get_config_rejects_invalid_token() -> None:
+    response = client.get("/api/v1/demo/not-a-real-token")
+    assert response.status_code == 404
+    assert "invalid" in response.json()["detail"].lower()
