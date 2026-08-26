@@ -279,6 +279,59 @@ the CLI came before the route in the first place.
 
 ---
 
+## Trace: terraform apply (session 7 landing zone)
+
+Not a code trace -- an infrastructure dependency order. Terraform
+resolves this automatically from resource references, but writing it
+out once is useful for reading `terraform plan` output sensibly:
+
+```
+azurerm_resource_group.main
+  |
+  +-- azurerm_log_analytics_workspace.main
+  |     |
+  |     +-- azurerm_application_insights.main
+  |     +-- azurerm_container_app_environment.main
+  |
+  +-- azurerm_user_assigned_identity.app
+  |
+  +-- random_password.postgres_admin
+  |     |
+  |     +-- azurerm_postgresql_flexible_server.main
+  |           |
+  |           +-- azurerm_postgresql_flexible_server_configuration.vector_extension
+  |           +-- azurerm_postgresql_flexible_server_database.overture
+  |           +-- azurerm_postgresql_flexible_server_firewall_rule.allow_my_ip
+  |           +-- azurerm_postgresql_flexible_server_firewall_rule.allow_azure_services
+  |
+  +-- random_string.kv_suffix
+  |     |
+  |     +-- azurerm_key_vault.main
+  |           |
+  |           +-- azurerm_key_vault_access_policy.operator (Aaron)
+  |           +-- azurerm_key_vault_access_policy.app (managed identity)
+  |           +-- azurerm_key_vault_secret.database_url
+  |                 (depends on: postgres FQDN + admin password + db name,
+  |                  so this is the LAST thing created on a first apply)
+  |
+  +-- azurerm_consumption_budget_resource_group.main
+```
+
+NOT created by this configuration: any Container App itself (session
+8), any Entra ID app registration (session 8, D-0022), the Anthropic
+API key in Key Vault (manual, post-apply, D-0026).
+
+Verification status as of this file's last edit: UNVERIFIED. This is
+the first session where I (the AI) could not run `terraform init`,
+`validate`, or `plan` myself -- no network access to
+registry.terraform.io or any Azure endpoint from this environment.
+Every prior session's code was proven to at least lint/typecheck/test
+green before being handed off; this HCL has only been reviewed by
+hand. Aaron's `terraform plan` output is the first real verification
+this configuration gets.
+
+---
+
 ## AI surface by phase
 
 What the AI (me, in this project) was allowed to write or decide, per
@@ -292,12 +345,17 @@ actually design vs generate."
 | 3 | Full extraction graph: 5 node functions, prompts, span-location/parsing logic, graph builder, 4 end-to-end tests against a fake provider | Did not add an LLM call to `assemble_brief` even though a prose summary would look more polished — see D-0010. Did not attempt partial index alignment on a scope-classification length mismatch — see D-0012. Zero real LLM calls made or tested here; all graph logic verified against a FakeProvider, never api.anthropic.com. |
 | 4 | Persistence layer (pure mapping function + async writer), CLI entry point, 3 synthetic transcripts, 2 tests for the pure mapping function | Did not write a test claiming to prove `persist_extraction_result` works against real Postgres — it can't be, from this environment. Did not wire an `AsyncPostgresSaver` checkpointer — deferred, see open threads. Zero real Claude calls made from this environment; the CLI is verified structurally (help text, argument validation, missing-file handling) but not against api.anthropic.com — that first real call is Aaron's step. A real bug was found on Aaron's first live run (D-0014, missing code-fence stripping in classify_scope) and fixed with a proven regression test, plus a second real gap (D-0015, stale `.env` DATABASE_URL) that was a process issue, not code — both closed out by session's end. |
 | 5 | Blueprint catalog (3 fixed blueprints), deterministic scoring (`select_blueprint`), LLM-assisted slot filling (`fill_config`), the LLM-free config validator (`validate_config`), persistence for DemoConfig, CLI wiring, 18 new tests | Did not let the LLM choose which blueprint to use, or which tools attach to one — see D-0017. Did not put validation logic inside `fill_config` even though it would have been fewer files — see D-0018. Wrote a test that greps `validator.py`'s own source to prove it never imports a provider, rather than trusting a comment to stay true. `fill_config`'s real-API behavior is untested here — same gap as sessions 1-4's first LLM-touching code, closed by Aaron's next live run. |
-| 6 | Deterministic hashing embedder, chunking/ingestion, pgvector-backed retrieval (pure ranking + live query split), signed share tokens, the grounded answer function with position-based citations, the first HTTP route besides `/health`, `overture ask` CLI command, second Alembic migration, 27 new tests | Did not reach for a third paid embeddings API — see D-0021. Did not build full account-based auth for the prospect-facing route — a signed token proves possession of a link, not identity, and that's a deliberate, narrower guarantee — see D-0022. Did catch its own introspection mistake mid-session (a route-listing script that looked at the wrong Starlette attribute) and replaced it with a real TestClient-based check plus a permanent regression test, rather than reporting an unverified guess as fact. |
+| 6 | Deterministic hashing embedder, chunking/ingestion, pgvector-backed retrieval (pure ranking + live query split), signed share tokens, the grounded answer function with position-based citations, the first HTTP route besides `/health`, `overture ask` CLI command, second Alembic migration, 27 new tests | Did not reach for a third paid embeddings API — see D-0021. Did not build full account-based auth for the prospect-facing route — a signed token proves possession of a link, not identity, and that's a deliberate, narrower guarantee — see D-0022. Did catch its own introspection mistake mid-session (a route-listing script that looked at the wrong Starlette attribute) and replaced it with a real TestClient-based check plus a permanent regression test, rather than reporting an unverified guess as fact. Two real bugs found on Aaron's live re-run of this session's fix: a max_tokens ceiling that scaled with itself twice (D-0023), root-caused and replaced with batching + fault isolation (D-0024) rather than a third blind ceiling increase. |
+| 7 | Full Terraform landing zone: resource group, Postgres Flexible Server with pgvector, Container Apps environment (empty), Key Vault with dual access policies, managed identity, Application Insights, budget alert; up/down wrapper scripts | Did not put the Anthropic API key anywhere in Terraform state or `.tfvars` — see D-0026. Did not reach for private networking despite it being the "more correct" production answer — see D-0027, a consciously named tradeoff, not an oversight. **Could not verify any of this by execution** — no sandbox network access to Azure or the Terraform registry. This is the first session where "I wrote it and reviewed it carefully" is the actual limit of what happened on my end, not "I wrote it and proved it," and that limit is stated here explicitly rather than left implicit. |
 
 ---
 
 ## Open threads for next session
 
+- **Session 7's entire Terraform configuration is unverified by
+  execution** — see the trace above. `terraform validate` and
+  `terraform plan` are Aaron's first real checks on this HCL, not a
+  formality repeating what I already confirmed.
 - `retrieve_top_chunks` (the pgvector cosine_distance query) and the
   `/api/v1/demo/{token}/ask` route's full happy path (valid token,
   real chunks, real LLM answer) have never run against a live

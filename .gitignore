@@ -12,3 +12,12 @@ __pycache__/
 
 .vscode/
 .idea/
+
+# Terraform -- state can contain resource metadata, tfvars holds a
+# real IP address and email; the lock file IS committed on purpose
+# (reproducible provider versions), see decisions.md D-0025.
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/terraform.tfvars
+terraform/tfplan

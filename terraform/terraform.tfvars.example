@@ -1,0 +1,15 @@
+# Copy this file to terraform.tfvars and fill in real values.
+# terraform.tfvars is gitignored -- same convention as .env vs
+# .env.example (see .gitignore, and decisions.md D-0002).
+
+# Find yours with: curl -s ifconfig.me
+my_ip_address = "REPLACE_WITH_YOUR_PUBLIC_IP"
+
+alert_email = "you@example.com"
+
+# Everything below has a sensible default in variables.tf -- only
+# uncomment and change these if you actually need something different.
+
+# location          = "westus2"
+# postgres_sku_name = "B_Standard_B1ms"
+# budget_amount_usd = 25
