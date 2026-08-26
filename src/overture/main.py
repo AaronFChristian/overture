@@ -17,5 +17,17 @@ app = FastAPI(
     version="0.1.0",
 )
 
+# Only wired when a real connection string is present -- see
+# config.py's app_insights_connection_string. This keeps local dev
+# and the entire test suite free of any Azure Monitor network call;
+# `uv run pytest` never has this set, so this block never executes
+# during CI or local development, only in the deployed container.
+if settings.app_insights_connection_string:
+    from azure.monitor.opentelemetry import configure_azure_monitor
+    from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+
+    configure_azure_monitor(connection_string=settings.app_insights_connection_string)
+    FastAPIInstrumentor.instrument_app(app)
+
 app.include_router(health_router)
 app.include_router(demo_router)

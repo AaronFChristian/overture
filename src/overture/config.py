@@ -44,6 +44,15 @@ class Settings(BaseSettings):
     azure_openai_deployment: str | None = None
     azure_openai_api_version: str = "2024-10-21"
 
+    # --- Observability ---------------------------------------------------
+    # Unset in local dev and in tests -- main.py only calls the Azure
+    # Monitor SDK when this is actually present, so neither local
+    # development nor the test suite ever makes a network call to
+    # Azure just by importing the app. Set in production via the
+    # Container App's environment (session 8+), sourced from the
+    # Application Insights connection string Terraform outputs.
+    app_insights_connection_string: str | None = None
+
     # --- Demo share tokens --------------------------------------------
     # See poc/tokens.py D-0022. The local dev default is intentionally
     # obviously-a-placeholder so nobody mistakes it for a real secret

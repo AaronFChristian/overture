@@ -17,6 +17,7 @@ dependencies = [
     "langgraph-checkpoint-postgres>=2.0.1",
     "pgvector>=0.3.5",
     "itsdangerous>=2.2.0",
+    "azure-monitor-opentelemetry>=1.6.0",
 ]
 
 [project.optional-dependencies]

@@ -346,33 +346,31 @@ actually design vs generate."
 | 4 | Persistence layer (pure mapping function + async writer), CLI entry point, 3 synthetic transcripts, 2 tests for the pure mapping function | Did not write a test claiming to prove `persist_extraction_result` works against real Postgres — it can't be, from this environment. Did not wire an `AsyncPostgresSaver` checkpointer — deferred, see open threads. Zero real Claude calls made from this environment; the CLI is verified structurally (help text, argument validation, missing-file handling) but not against api.anthropic.com — that first real call is Aaron's step. A real bug was found on Aaron's first live run (D-0014, missing code-fence stripping in classify_scope) and fixed with a proven regression test, plus a second real gap (D-0015, stale `.env` DATABASE_URL) that was a process issue, not code — both closed out by session's end. |
 | 5 | Blueprint catalog (3 fixed blueprints), deterministic scoring (`select_blueprint`), LLM-assisted slot filling (`fill_config`), the LLM-free config validator (`validate_config`), persistence for DemoConfig, CLI wiring, 18 new tests | Did not let the LLM choose which blueprint to use, or which tools attach to one — see D-0017. Did not put validation logic inside `fill_config` even though it would have been fewer files — see D-0018. Wrote a test that greps `validator.py`'s own source to prove it never imports a provider, rather than trusting a comment to stay true. `fill_config`'s real-API behavior is untested here — same gap as sessions 1-4's first LLM-touching code, closed by Aaron's next live run. |
 | 6 | Deterministic hashing embedder, chunking/ingestion, pgvector-backed retrieval (pure ranking + live query split), signed share tokens, the grounded answer function with position-based citations, the first HTTP route besides `/health`, `overture ask` CLI command, second Alembic migration, 27 new tests | Did not reach for a third paid embeddings API — see D-0021. Did not build full account-based auth for the prospect-facing route — a signed token proves possession of a link, not identity, and that's a deliberate, narrower guarantee — see D-0022. Did catch its own introspection mistake mid-session (a route-listing script that looked at the wrong Starlette attribute) and replaced it with a real TestClient-based check plus a permanent regression test, rather than reporting an unverified guess as fact. Two real bugs found on Aaron's live re-run of this session's fix: a max_tokens ceiling that scaled with itself twice (D-0023), root-caused and replaced with batching + fault isolation (D-0024) rather than a third blind ceiling increase. |
-| 7 | Full Terraform landing zone: resource group, Postgres Flexible Server with pgvector, Container Apps environment (empty), Key Vault with dual access policies, managed identity, Application Insights, budget alert; up/down wrapper scripts | Did not put the Anthropic API key anywhere in Terraform state or `.tfvars` — see D-0026. Did not reach for private networking despite it being the "more correct" production answer — see D-0027, a consciously named tradeoff, not an oversight. **Could not verify any of this by execution** — no sandbox network access to Azure or the Terraform registry. This is the first session where "I wrote it and reviewed it carefully" is the actual limit of what happened on my end, not "I wrote it and proved it," and that limit is stated here explicitly rather than left implicit. |
+| 7 | Full Terraform landing zone: resource group, Postgres Flexible Server with pgvector, Container Apps environment (empty), Key Vault with dual access policies, managed identity, Application Insights, budget alert; up/down wrapper scripts | Did not put the Anthropic API key anywhere in Terraform state or `.tfvars` — see D-0026. Did not reach for private networking despite it being the "more correct" production answer — see D-0027, a consciously named tradeoff, not an oversight. **Could not verify any of this by execution** — no sandbox network access to Azure or the Terraform registry. This is the first session where "I wrote it and reviewed it carefully" is the actual limit of what happened on my end, not "I wrote it and proved it," and that limit is stated here explicitly rather than left implicit. Three real infrastructure bugs found on Aaron's actual applies (wrong region, unregistered resource provider, an unverified zone pin) — each root-caused with real Azure evidence (a policy query, an explicit error message, an informed hypothesis honestly labeled as such) rather than repeated guessing, same discipline as every app-layer bug fix in prior sessions, now proven to extend to infrastructure too. |
+| 8 | Dockerfile, OpenTelemetry wiring (real Python, verified — 2 new tests, 69/69 total passing), GitHub Actions OIDC federation in Terraform, the Container App resource itself, deploy workflow YAML | Deliberately split what could be verified from what couldn't, same as session 7: OTel wiring got the full lint/mypy/pytest treatment because it's real Python; the Dockerfile, OIDC Terraform, and GitHub Actions workflow got careful review but not execution, same honest limit as session 7's HCL. Did not let a `terraform apply` silently overwrite whatever image GitHub Actions had deployed — see D-0034's `ignore_changes` on the container image. Did not build the user-facing MSAL login this session despite the original plan naming "session 8" for identity — deferred to session 9 on purpose, since there's no frontend yet to log into (see the session-start scoping note, and D-0022's original deferral). |
 
 ---
 
 ## Open threads for next session
 
-- **Session 7's entire Terraform configuration is unverified by
-  execution** — see the trace above. `terraform validate` and
-  `terraform plan` are Aaron's first real checks on this HCL, not a
-  formality repeating what I already confirmed.
-- `retrieve_top_chunks` (the pgvector cosine_distance query) and the
-  `/api/v1/demo/{token}/ask` route's full happy path (valid token,
-  real chunks, real LLM answer) have never run against a live
-  database or a live model in this environment — same verification
-  gap every session's new DB/LLM-touching code has had at handoff.
-  Aaron's next `overture extract` + `overture ask` pair is what
-  closes it.
-- Migration 0002 (chunks table + `CREATE EXTENSION vector`) is
-  verified via offline SQL generation only, same caveat as 0001.
-- `fill_config` and the validator have never run against real Claude
-  output — same verification gap every new LLM-touching module in
-  this project has had at the point it's handed off. Aaron's next
-  `overture extract` run is what closes it, the same way session 4's
-  did for extraction and scope classification.
-- `persist_demo_config` has never run against a live database in this
-  environment — same gap as `persist_extraction_result` before it,
-  closed the same way (Aaron's terminal, not mine).
+- **Session 8's Dockerfile, OIDC Terraform additions, Container App
+  resource, and GitHub Actions workflow are all unverified by
+  execution** — same limitation as session 7, for the same structural
+  reason (no sandbox network access to Docker, Azure, or GitHub).
+  Aaron's `terraform apply` + first manual workflow run are the real
+  first tests these get.
+- The GHCR package needs to be manually set to public after the
+  workflow's first run creates it (D-0033) — otherwise the Container
+  App will fail to pull the image with an auth error. Not yet
+  confirmed this manual step is actually sufficient in practice.
+- No proof yet that `azure-monitor-opentelemetry` actually delivers
+  telemetry to Application Insights correctly — the code is proven to
+  not crash and to stay inert locally (2 real tests), but the "does
+  it actually show up in App Insights when a real connection string
+  is set" question is unverified until the app is actually deployed
+  and generates real traffic.
+- User-facing Entra ID / MSAL login is still not built — explicitly
+  deferred to session 9, when there's a frontend to attach it to.
 - No `AsyncPostgresSaver` checkpointer wired into `build_graph()` yet
   — `cli.py` still calls it with `checkpointer=None`, so a failure
   mid-extraction can't currently be resumed, it just fails and the

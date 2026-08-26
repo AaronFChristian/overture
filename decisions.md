@@ -1069,3 +1069,349 @@ Revisit:  If Postgres still fails with the same InternalServerError
           request or checking Azure's status page for the region --
           at that point it's more likely an Azure-side issue than
           anything in this configuration.
+
+---
+
+## D-0031 — OIDC federated credential scoped to a single branch, not the whole repo
+
+Date: 2026-08-26 · Session 8 · Status: accepted
+
+Context:  GitHub's OIDC subject format supports several scopes --
+          whole-repo, specific branch, specific environment, pull
+          requests, tags. `azuread_application_federated_identity_credential`
+          needed a `subject` pattern.
+Decision: `subject = "repo:${var.github_repo}:ref:refs/heads/main"` --
+          only workflow runs triggered on the `main` branch can
+          exchange a GitHub OIDC token for an Azure one. A workflow
+          run from a feature branch, a fork, or a pull request gets no
+          token and cannot deploy, full stop, at the identity-provider
+          level -- not by convention, by construction.
+Why:      This project has one branch and one deploy target;
+          restricting to `main` costs nothing and closes an entire
+          class of risk (a PR from a compromised or malicious fork
+          attempting to trigger a deploy) for free. Scoping tightly by
+          default and widening only if a real need appears is the
+          same posture as D-0022's tokens (a link proves possession,
+          not identity) and D-0018's validator (deterministic checks,
+          narrowly scoped).
+Rejected: A whole-repo subject pattern (`repo:owner/name:*`) -- looser
+          than necessary for a single-branch project, and the tighter
+          pattern doesn't cost anything to set up correctly the first
+          time.
+Revisit:  If this project ever adopts a branching workflow (feature
+          branches deploying to a staging environment, say), add
+          additional federated credentials scoped to those specific
+          patterns rather than loosening this one.
+
+---
+
+## D-0032 — GitHub Actions deploy identity uses "Contributor," not a narrower role
+
+Date: 2026-08-26 · Session 8 · Status: accepted, acknowledged tradeoff
+
+Context:  The GitHub Actions OIDC identity needs enough Azure
+          permission to run `az containerapp update`. Azure has more
+          specific built-in roles for this, but their exact names
+          have shifted across Azure API versions and I could not
+          verify a specific narrower role name from this environment
+          (no Azure network access -- same limitation as all of
+          session 7's Terraform).
+Decision: `azurerm_role_assignment` grants the built-in `Contributor`
+          role, scoped to just this one resource group -- not
+          subscription-wide.
+Why:      `Contributor` is guaranteed to exist under that exact name
+          on every Azure subscription; a more specific but
+          possibly-misnamed role risks a repeat of session 7's
+          region/provider-registration debugging cycle, this time on
+          a role name I have no way to verify from here. Given the
+          resource group this scopes to is destroyed at the end of
+          every session (same ephemeral-infrastructure reasoning as
+          D-0025), the actual blast radius of "broader role than
+          strictly necessary" is low -- there's nothing long-lived for
+          excess permission to threaten.
+Rejected: A narrowly-scoped custom role or a more specific built-in
+          role name -- more correct in principle, genuinely worth
+          doing if this environment ever stops being destroyed every
+          session, but not worth risking an unverifiable role name on
+          a resource group with a multi-hour lifespan.
+Revisit:  If this project's Azure environment is ever left running
+          continuously rather than destroyed each session, revisit
+          immediately and scope down to the minimum role actually
+          needed for `containerapp update`.
+
+---
+
+## D-0033 — GHCR over ACR, public image, manually-triggered deploy
+
+Date: 2026-08-26 · Session 8 · Status: accepted
+
+Context:  The deployed container image needs to live somewhere
+          Container Apps can pull it from. Azure Container Registry
+          is the "native" choice with managed-identity pull support
+          and no public-visibility tradeoff; GitHub Container Registry
+          is free and needs no new Azure resource, but Container Apps
+          has no managed-identity pull mechanism for it -- only
+          registry username/password, which would mean storing a
+          GitHub PAT as yet another secret.
+Decision: GitHub Container Registry (ghcr.io), with the package set to
+          **public** after the first push, so Container Apps pulls it
+          with no registry credential at all. Paired with a
+          **manually-triggered** (`workflow_dispatch`, not
+          on-push) deploy workflow -- see the workflow file's own
+          comment for the reasoning shared with D-0025's
+          ephemeral-infrastructure pattern.
+Why:      A public image carries no meaningful risk here specifically
+          because of how this project already handles secrets: nothing
+          sensitive is ever baked into the image at build time --
+          `Settings`/`get_settings()` reads everything at runtime from
+          environment variables sourced from Key Vault (D-0026). A
+          public image is just public application code, which the
+          private GitHub repo's source already implies isn't a secret
+          in the first place (the code itself isn't the confidential
+          part; the API keys and DB credentials are, and those never
+          enter the image). Avoiding ACR avoids a new billed Azure
+          resource, consistent with the minimum-resources principle
+          this project has held to since before session 1 began.
+Rejected: Azure Container Registry -- the more "correct" production
+          answer (private by default, managed-identity pull, no manual
+          visibility toggle to remember), explicitly not worth its
+          cost for a portfolio project with this usage pattern.
+          Storing a GHCR PAT as a Container App secret to keep the
+          package private -- rejected because it reintroduces exactly
+          the kind of stored credential the whole OIDC design (D-0031)
+          exists to avoid, just for a lower-value target.
+Revisit:  If this project is ever demoed continuously rather than
+          torn down each session, or if the app ever bakes in anything
+          sensitive at build time (it shouldn't, but if that ever
+          changes), revisit toward ACR immediately.
+
+---
+
+## D-0034 — Terraform never touches the running container image after first apply
+
+Date: 2026-08-26 · Session 8 · Status: accepted
+
+Context:  `azurerm_container_app.main` needs some initial image to be
+          valid at first `apply`, before any real deploy has ever run
+          -- but after that, GitHub Actions should be the only thing
+          that changes which image is live.
+Decision: The container block's `image` field starts pointing at a
+          public Microsoft quickstart image, and
+          `lifecycle { ignore_changes = [template[0].container[0].image] }`
+          tells Terraform to never revert it on subsequent applies.
+Why:      Without this, every `terraform apply` (say, to add an
+          unrelated resource later) would silently roll the running
+          app back to the placeholder image, undoing whatever the
+          most recent GitHub Actions deploy had shipped. This is the
+          infrastructure equivalent of D-0034's sibling concern
+          elsewhere in this project: two different systems (Terraform,
+          GitHub Actions) each need clear, non-overlapping ownership
+          of what they're allowed to change, the same way D-0018 draws
+          a hard line between what the LLM proposes and what the
+          deterministic validator decides.
+Rejected: Having Terraform manage the image tag directly (e.g. via a
+          variable GitHub Actions would need to update via `terraform
+          apply` on every deploy) -- adds a second deploy mechanism
+          for no benefit; `az containerapp update` is simpler, faster,
+          and doesn't require the deploy pipeline to touch Terraform
+          state at all.
+Revisit:  Not expected to change. This ownership split is a durable
+          architectural line, not a situational choice.
+
+---
+
+## D-0035 — azure-monitor-opentelemetry over hand-rolled OTLP exporters
+
+Date: 2026-08-26 · Session 8 · Status: accepted
+
+Context:  The original stack design (before session 1) named
+          OpenTelemetry → Application Insights as the observability
+          path. Needed to actually wire it up.
+Decision: `azure-monitor-opentelemetry`, Microsoft's own turnkey
+          distribution -- `configure_azure_monitor(connection_string=...)`
+          plus `FastAPIInstrumentor.instrument_app(app)`, gated behind
+          `if settings.app_insights_connection_string:` in main.py so
+          local dev and the entire test suite never make an Azure
+          network call just by importing the app (proven by two real
+          tests, not just a comment -- see test_observability.py).
+Why:      Hand-rolling the OTel SDK, a manual OTLP exporter, and
+          resource-detector configuration is meaningfully more code
+          for the same outcome Microsoft's own package already
+          provides pre-wired and pre-tested against Application
+          Insights specifically. This is the same reasoning as D-0006
+          (use the SDK, don't hand-roll what a maintained library
+          already does correctly) applied to observability instead of
+          LLM providers.
+Rejected: Manual OTel SDK wiring with a generic OTLP exporter --
+          more portable in principle (works with any OTLP-compatible
+          backend, not just App Insights), but this project has one
+          observability backend and no near-term need to swap it;
+          paying the extra integration code for portability nothing
+          currently needs isn't worth it.
+Revisit:  If this project's observability backend ever needs to be
+          swappable (e.g. demoing the same app against a different
+          company's observability stack), revisit toward a generic
+          OTLP exporter behind a similar Protocol-based swap point as
+          providers/base.py's LLMProvider.
+
+---
+
+## D-0036 — SDSU's Entra ID tenant blocks application registration for this account
+
+Date: 2026-08-26 · Session 8 (post-hoc, found via Aaron's real apply) · Status: confirmed, not fixable by this project
+
+Context:  `terraform apply` failed to create `azuread_application.github_actions`
+          with `Authorization_RequestDenied: Insufficient privileges
+          to complete the operation.` Rather than assume this was a
+          Terraform config problem, Aaron ran a direct, unrelated
+          test -- `az ad app create --display-name
+          permission-test-delete-me` -- outside Terraform entirely.
+          It failed with the identical error.
+Decision: Treat this as confirmed: SDSU's Entra ID tenant has a
+          directory-level policy preventing student accounts from
+          registering applications at all. Not a Terraform bug, not a
+          misconfigured resource, not something achievable by
+          adjusting this project's code.
+Why:      The direct `az ad app create` test is what makes this a
+          confirmed fact rather than a guess -- an identical failure
+          on a command with zero relationship to this project's
+          Terraform proves the restriction is account/tenant-level,
+          not something specific to the `azuread_application` resource
+          or its configuration. This is the same evidentiary standard
+          every other real bug in this project has been held to
+          (D-0014, D-0019, D-0023/D-0024, D-0029, D-0030): don't fix
+          what you haven't confirmed is actually broken.
+Rejected: Continuing to retry `terraform apply` hoping it resolves --
+          would have wasted apply cycles (and, for the resources that
+          succeed alongside the failing one, real provisioning time)
+          on a problem no code change can fix.
+Revisit:  If Aaron ever requests and receives the Application
+          Developer role from SDSU IT, or runs this project against a
+          personal (non-institutional) Azure subscription/tenant, this
+          restriction lifts and D-0037's toggle can simply be flipped
+          to `true`.
+
+---
+
+## D-0037 — OIDC deploy made optional via a variable; manual deploy is this session's real path
+
+Date: 2026-08-26 · Session 8 · Status: accepted
+
+Context:  D-0036 confirmed GitHub Actions OIDC cannot work on this
+          tenant with this account. The rest of the landing zone
+          (everything except the four `azuread_*`/OIDC-dependent
+          resources) has no relationship to that restriction and
+          should still deploy normally.
+Decision: `enable_github_actions_oidc` (default `false`) gates all
+          four OIDC-related resources behind `count`. The GitHub
+          Actions workflow file stays in the repo unchanged --
+          correct and ready for a tenant that permits app
+          registration. `scripts/manual-deploy.sh` provides this
+          session's actual working deploy path: build and push the
+          image using Aaron's own authenticated `docker`/`az`
+          sessions, which face no such restriction (registering an
+          app and having Contributor-level resource permissions are
+          different things -- Aaron's account has the latter, not the
+          former).
+Why:      Deleting the OIDC code because it can't run on this one
+          tenant would throw away correct, working design for a
+          reason that has nothing to do with whether the design is
+          right. Toggling it off, documented with a real, confirmed
+          reason, keeps the automated path demonstrable in an
+          interview ("here's the OIDC design, here's why it's off by
+          default, here's the manual fallback it degrades to") rather
+          than silently absent with no explanation.
+Rejected: Deleting oidc.tf and deploy.yml entirely -- throws away
+          real, correct work over an external constraint, and removes
+          the more sophisticated half of this session's story for no
+          benefit.
+Revisit:  Flip `enable_github_actions_oidc = true` (as a `.tfvars`
+          override, not a changed default, to keep the safe default
+          for this tenant) the moment either D-0036's conditions
+          change or this project runs against a subscription without
+          this restriction.
+
+---
+
+## D-0038 — Postgres `zone` needs `ignore_changes`, not just an absent argument
+
+Date: 2026-08-26 · Session 8 (post-hoc, found via Aaron's real apply) · Status: fixed
+
+Context:  D-0030 (session 7) removed the explicit `zone = "1"` from
+          the Postgres config, reasoning that letting Azure choose
+          automatically would remove one plausible cause of an
+          unexplained InternalServerError. That worked -- Postgres
+          provisioned successfully in session 7 and again fresh in
+          session 8. But omitting the argument doesn't mean Azure's
+          server ends up with no zone; Azure still assigns a real one
+          (zone 1, both times). On this session's second `apply`
+          (targeting just the newly-added Container App), Terraform
+          saw "config has no zone value, live server has zone=1" and
+          tried to reconcile by clearing it -- which the Postgres
+          Flexible Server API rejects outright: a zone can only be
+          changed via a specific high-availability zone-swap
+          operation, not a plain update. The apply failed on this,
+          not on anything related to the Container App itself.
+Decision: Added `lifecycle { ignore_changes = [zone] }` to the
+          Postgres resource. The argument itself stays absent from
+          the config (D-0030's reasoning is unchanged and still
+          correct) -- this just tells Terraform to stop trying to
+          reconcile that one field against whatever Azure actually
+          assigned.
+Why:      This is the same shape of problem D-0034 already solved for
+          the container image, just discovered in a second place:
+          Azure fills in a real value for something we deliberately
+          left unspecified, and a later `apply` shouldn't treat that
+          as drift to correct. `ignore_changes` says "Azure owns this
+          field after creation," which is the actually-true statement
+          -- D-0030 was right that we shouldn't pin a specific zone
+          value; it just didn't yet account for Terraform still
+          wanting to reconcile the field's *absence*.
+Rejected: Explicitly setting `zone = "1"` in the config now that we
+          know that's what Azure picked -- would resolve this specific
+          plan cleanly, but re-introduces a hardcoded assumption about
+          which zone is correct, the exact thing D-0030 removed for a
+          good reason. `ignore_changes` gets the benefit of both
+          decisions at once.
+Revisit:  If this project's Postgres server is ever managed across
+          multiple regions or needs explicit HA zone control, this
+          `ignore_changes` entry is exactly what would need to come
+          back out.
+
+---
+
+## D-0039 — Docker builds pinned to linux/amd64 for Apple Silicon → Azure deploys
+
+Date: 2026-08-26 · Session 8 (post-hoc, found via a real failed Container App deployment) · Status: fixed
+
+Context:  The manually-built and pushed image failed to deploy with
+          `no child with platform linux/amd64 in index`. Aaron is on
+          an Apple Silicon Mac (arm64). `docker build` with no
+          `--platform` flag builds for the host's own architecture by
+          default -- the pushed image only contained an arm64 layer,
+          and Azure Container Apps' infrastructure is amd64-only, so
+          there was nothing for it to pull and run.
+Decision: Added `--platform linux/amd64` to the `docker build` call in
+          `scripts/manual-deploy.sh`, and pinned `--platform=linux/amd64`
+          on both `FROM` lines in the Dockerfile itself, so the
+          correct target platform holds regardless of which command
+          actually triggers the build.
+Why:      This is a genuinely common cross-platform gotcha (build on
+          Apple Silicon, deploy to x86 cloud), not something specific
+          to a misconfiguration -- worth fixing at both the script
+          and the Dockerfile level since either could be the actual
+          entry point for a future build (a GitHub Actions runner,
+          for instance, already builds on amd64 hardware by default
+          and wouldn't have hit this at all, but a human running
+          `docker build .` directly on this Mac, without the script,
+          would hit it again if only the script were fixed).
+Rejected: Fixing only the script -- leaves a trap for any future
+          direct `docker build` invocation that bypasses the script.
+          Fixing only the Dockerfile -- technically sufficient, but
+          the script's own flag is cheap, explicit documentation of
+          the constraint right where the build actually happens.
+Revisit:  Not expected to change unless this project's build pipeline
+          moves to amd64-native hardware (e.g. GitHub Actions' default
+          runners, once D-0036/D-0037's tenant restriction lifts and
+          OIDC deploy is usable), at which point the pin becomes
+          unnecessary but remains harmless to keep.

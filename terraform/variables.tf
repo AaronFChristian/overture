@@ -50,3 +50,23 @@ variable "budget_amount_usd" {
   type        = number
   default     = 25
 }
+
+variable "github_repo" {
+  description = "GitHub repo in 'owner/name' form, used to scope the OIDC federated credential so ONLY workflow runs from this exact repo (on the main branch) can obtain an Azure token. See decisions.md D-0031."
+  type        = string
+  default     = "AaronFChristian/overture"
+}
+
+variable "enable_github_actions_oidc" {
+  description = <<-EOT
+    Whether to create the Entra ID app registration for GitHub Actions
+    OIDC deploy. Defaults to false: SDSU's Entra ID tenant blocks
+    student accounts from registering applications (confirmed via a
+    direct `az ad app create` test, not assumed -- see decisions.md
+    D-0036). The OIDC design and code are kept intact and correct for
+    a tenant that permits app registration; this flag lets the rest
+    of the landing zone deploy without repeatedly hitting that wall.
+  EOT
+  type        = bool
+  default     = false
+}

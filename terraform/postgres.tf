@@ -36,6 +36,19 @@ resource "azurerm_postgresql_flexible_server" "main" {
   # sacrificing anything this environment actually needs.
 
   tags = local.common_tags
+
+  lifecycle {
+    # Azure always assigns a real zone even when we don't specify one
+    # -- the config staying "unset" doesn't mean Azure's server stays
+    # unset too. Once assigned, the Postgres API refuses a plain
+    # update-in-place to change it (only a specific HA zone-swap
+    # operation is allowed), so a later `apply` sees "config wants no
+    # zone, reality has one" and gets stuck trying to reconcile a
+    # value neither side is actually trying to change. Same pattern
+    # as D-0034's container image: let Azure choose once at create
+    # time, then never let Terraform re-litigate it. See D-0038.
+    ignore_changes = [zone]
+  }
 }
 
 # Allow-lists the pgvector extension at the server level. The actual

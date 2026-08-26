@@ -58,6 +58,34 @@ vector` still happens per-database — that's what Alembic migration
 `0002_add_chunks.py` already does. You'd run that against this cloud
 database in session 8, not this session.
 
+## Deploying the app (session 8+)
+
+After `terraform apply`, one-time setup in the GitHub repo (Settings →
+Secrets and variables → Actions → Variables tab) -- these are
+**variables**, not secrets, since OIDC needs no secret at all:
+
+```bash
+terraform output github_actions_client_id
+terraform output azure_tenant_id
+terraform output azure_subscription_id
+terraform output resource_group_name
+terraform output container_app_name
+```
+
+Set each as a repository variable: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`,
+`AZURE_SUBSCRIPTION_ID`, `AZURE_RESOURCE_GROUP`, `CONTAINER_APP_NAME`.
+
+**Also make the GHCR package public** after the first deploy run
+creates it (repo → Packages → overture → Package settings → Change
+visibility). See decisions.md D-0033 for why this is a deliberate,
+low-risk choice rather than an oversight -- no secrets are ever baked
+into the image itself.
+
+Then trigger the deploy from GitHub's Actions tab: **Deploy to Azure
+Container Apps → Run workflow**. It's manual on purpose (D-0033) --
+this project's infrastructure doesn't exist between sessions, so an
+auto-deploy-on-push would fail on any unrelated push.
+
 ## Tearing down
 
 ```bash

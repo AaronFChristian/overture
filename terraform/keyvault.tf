@@ -64,3 +64,20 @@ resource "azurerm_key_vault_secret" "database_url" {
 
   depends_on = [azurerm_key_vault_access_policy.operator]
 }
+
+# Real, generated share-token secret for the deployed app -- replaces
+# the "local-dev-only-placeholder" default from config.py. Same
+# reasoning as the Postgres password (D-0026): Terraform generates
+# it, so Terraform is allowed to manage it as a secret.
+resource "random_password" "share_token_secret" {
+  length  = 48
+  special = false # itsdangerous's serializer doesn't need special chars, plain alphanumeric is simplest
+}
+
+resource "azurerm_key_vault_secret" "share_token_secret" {
+  name         = "share-token-secret"
+  key_vault_id = azurerm_key_vault.main.id
+  value        = random_password.share_token_secret.result
+
+  depends_on = [azurerm_key_vault_access_policy.operator]
+}
