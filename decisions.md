@@ -1649,3 +1649,74 @@ Revisit:  If the frontend's dev port is ever changed from Vite's
           5173 default, or if local development starts running the
           frontend from a different host, update the allowed origin
           to match.
+
+---
+
+## D-0045 — SE console auth is a shared secret, not real MSAL
+
+Date: 2026-08-27 · Session 10 · Status: accepted
+
+Context:  `POST /api/v1/sessions/extract` needed *some* access control
+          before existing publicly -- unlike the demo route (D-0022's
+          share token, appropriate for its own threat model), this
+          route lets anyone who can reach it run real, billed LLM
+          calls and write to the database.
+Decision: `settings.console_shared_secret`, defaulting to `None`
+          (auth disabled -- the local-dev-friendly default, matching
+          D-0037's pattern for GitHub Actions OIDC). When set, the
+          route requires a matching `X-Console-Secret` header.
+Why:      Real Entra ID/MSAL remains blocked by D-0036's confirmed
+          SDSU tenant restriction -- building it now would repeat the
+          exact dead end Session 8 already hit and worked around.
+          A shared secret is proportionate for a single-operator
+          console that's only ever meant to be reachable by Aaron
+          himself, and it costs nothing to toggle on the moment this
+          is ever exposed beyond localhost.
+Rejected: Building real MSAL anyway, on the theory the console
+          "deserves" real auth -- the tenant restriction makes this
+          not a design choice but a hard external constraint; no
+          amount of additional engineering effort changes whether
+          the account can register an application.
+Revisit:  The moment D-0036's tenant restriction lifts (Aaron
+          requests and receives the Application Developer role, or
+          this project moves to a personal Azure tenant), replace
+          this with real MSAL -- the toggle makes that a config
+          change, not a rewrite.
+
+---
+
+## D-0046 — extraction pipeline factored into poc/orchestration.py, shared by CLI and HTTP
+
+Date: 2026-08-27 · Session 10 · Status: accepted
+
+Context:  The SE console's new HTTP route needed to run the exact
+          same pipeline `overture extract` already ran -- graph
+          invocation, blueprint selection, config validation,
+          persistence, chunk ingestion, token minting. Writing it a
+          second time in `api/sessions.py` risked the two drifting
+          into subtly different implementations of "the same" thing
+          over time.
+Decision: Extracted the shared logic into
+          `poc/orchestration.py::run_extraction_pipeline`, called by
+          both `cli.py::run_extract` and the new
+          `POST /api/v1/sessions/extract` route. Neither caller
+          commits the transaction -- that stays the caller's
+          responsibility, same contract as `persist_extraction_result`
+          has held since session 4.
+Why:      This is the direct payoff of D-0013's original reasoning
+          finally arriving: build the CLI first specifically so it's
+          proven against real API behavior before anything else
+          depends on the same logic, then share that proven logic
+          rather than reimplementing it. One pipeline, two thin
+          callers -- a bug fix or behavior change in the pipeline
+          itself now automatically applies to both the CLI and the
+          console, instead of needing to be found and fixed twice.
+Rejected: Writing the route's logic independently, treating the CLI
+          as throwaway scaffolding now that a "real" HTTP entry point
+          exists -- the CLI remains the fast local diagnostic path
+          per D-0013's original framing, not a first draft to be
+          discarded.
+Revisit:  Not expected to change. If a third caller ever needs this
+          pipeline (a batch-processing script, say), it becomes a
+          third caller of the same function, not a reason to
+          restructure.

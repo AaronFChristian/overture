@@ -125,3 +125,79 @@ h1 {
   opacity: 0.5;
   cursor: default;
 }
+
+a {
+  color: #1a1a1a;
+}
+
+.console-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-bottom: 2rem;
+}
+
+.console-form textarea {
+  padding: 0.75rem 1rem;
+  border: 1px solid #ccc;
+  border-radius: 8px;
+  font-size: 0.95rem;
+  font-family: inherit;
+  resize: vertical;
+}
+
+.console-secret-input {
+  padding: 0.6rem 1rem;
+  border: 1px solid #ccc;
+  border-radius: 8px;
+  font-size: 0.85rem;
+}
+
+.console-form button {
+  align-self: flex-start;
+  padding: 0.75rem 1.5rem;
+  border: none;
+  border-radius: 8px;
+  background: #1a1a1a;
+  color: white;
+  cursor: pointer;
+  font-size: 1rem;
+}
+
+.console-form button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.extraction-result {
+  border-top: 1px solid #ddd;
+  padding-top: 1.5rem;
+}
+
+.extraction-result h2 {
+  font-size: 1.15rem;
+  margin: 0 0 0.5rem;
+}
+
+.stat-grid {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 0.25rem 1rem;
+  margin: 1rem 0;
+  font-size: 0.9rem;
+}
+
+.stat-grid dt {
+  color: #666;
+}
+
+.stat-grid dd {
+  margin: 0;
+  font-weight: 600;
+}
+
+.demo-link {
+  display: inline-block;
+  margin-top: 0.5rem;
+  font-weight: 600;
+}

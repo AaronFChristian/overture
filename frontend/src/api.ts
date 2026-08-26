@@ -17,6 +17,20 @@ export interface AskResponse {
   citations: string[];
 }
 
+export interface ExtractResponse {
+  session_id: string;
+  summary: string;
+  requirement_counts: Record<string, number>;
+  scope_counts: Record<string, number>;
+  blueprint_id: string;
+  blueprint_name: string;
+  config_status: string;
+  validation_errors: string[];
+  sample_questions: string[];
+  demo_token: string | null;
+  chunks_indexed: number;
+}
+
 export class ApiError extends Error {
   status: number;
 
@@ -53,4 +67,19 @@ export async function askQuestion(token: string, question: string): Promise<AskR
     body: JSON.stringify({ question }),
   });
   return handleResponse<AskResponse>(response);
+}
+
+export async function extractSession(
+  transcript: string,
+  consoleSecret?: string,
+): Promise<ExtractResponse> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (consoleSecret) headers["X-Console-Secret"] = consoleSecret;
+
+  const response = await fetch(`${API_BASE_URL}/api/v1/sessions/extract`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ transcript }),
+  });
+  return handleResponse<ExtractResponse>(response);
 }

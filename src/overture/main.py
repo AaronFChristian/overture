@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from overture.api.demo import router as demo_router
 from overture.api.health import router as health_router
+from overture.api.sessions import router as sessions_router
 from overture.config import get_settings
 
 settings = get_settings()
@@ -49,3 +50,4 @@ if settings.app_insights_connection_string:
 
 app.include_router(health_router)
 app.include_router(demo_router)
+app.include_router(sessions_router)

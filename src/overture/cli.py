@@ -22,77 +22,69 @@ from sqlalchemy import select
 
 from overture.config import get_settings
 from overture.db import models as db_models
-from overture.db.repository import persist_chunks, persist_demo_config, persist_extraction_result
 from overture.db.session import get_sessionmaker
-from overture.graph.builder import build_graph
-from overture.poc.compiler import fill_config, select_blueprint
+from overture.poc.blueprints import ALL_BLUEPRINTS
 from overture.poc.embeddings import HashingEmbedder
-from overture.poc.ingestion import ingest_transcript
+from overture.poc.orchestration import run_extraction_pipeline
 from overture.poc.retrieval import retrieve_top_chunks
 from overture.poc.runtime import answer_question
-from overture.poc.tokens import mint_share_token, verify_share_token
-from overture.poc.validator import validate_config
+from overture.poc.tokens import verify_share_token
 from overture.providers.factory import get_llm_provider
-from overture.schemas import DiscoverySession as DiscoverySessionSchema
 
 
 async def run_extract(transcript_path: Path) -> None:
     settings = get_settings()
     transcript = transcript_path.read_text(encoding="utf-8")
-    session_id = uuid.uuid4()
 
     print(f"Provider: {settings.llm_provider}")
-    print(f"Session:  {session_id}")
     print(f"Source:   {transcript_path}")
     print("Running extraction graph...\n")
 
     provider = get_llm_provider(settings)
-    graph = build_graph(provider)
 
-    result = await graph.ainvoke({"session_id": str(session_id), "transcript": transcript})
-    brief = result["brief"]
+    sessionmaker = get_sessionmaker()
+    async with sessionmaker() as db:
+        outcome = await run_extraction_pipeline(
+            transcript=transcript,
+            provider=provider,
+            db=db,
+            share_token_secret=settings.share_token_secret,
+        )
+        await db.commit()
 
-    print(brief.summary)
+    print(f"Session:  {outcome.session_id}")
+    print(outcome.brief.summary)
     print()
-    for req in brief.requirements:
+    for req in outcome.brief.requirements:
         print(f"[{req.category.value:12}] [{req.scope.value:20}] {req.text}")
         print(f'    source: "{req.source_span.quoted_text}"')
     print()
 
-    blueprint = select_blueprint(brief)
-    print(f"Selected blueprint: {blueprint.id} ({blueprint.name})")
-    demo_config = await fill_config(brief, blueprint, provider)
-    demo_config = validate_config(demo_config)
+    blueprint = next(
+        (bp for bp in ALL_BLUEPRINTS if bp.id == outcome.demo_config.blueprint_id), None
+    )
+    blueprint_name = blueprint.name if blueprint else outcome.demo_config.blueprint_id
+    print(f"Selected blueprint: {outcome.demo_config.blueprint_id} ({blueprint_name})")
 
-    print(f"Config status: {demo_config.status.value}")
-    if demo_config.validation_errors:
-        for error in demo_config.validation_errors:
+    print(f"Config status: {outcome.demo_config.status.value}")
+    if outcome.demo_config.validation_errors:
+        for error in outcome.demo_config.validation_errors:
             print(f"  - {error}")
     else:
-        print(f"System prompt: {demo_config.system_prompt}")
+        print(f"System prompt: {outcome.demo_config.system_prompt}")
         print("Sample questions:")
-        for question in demo_config.sample_questions:
+        for question in outcome.demo_config.sample_questions:
             print(f"  - {question}")
     print()
 
-    sessionmaker = get_sessionmaker()
-    async with sessionmaker() as db:
-        session_schema = DiscoverySessionSchema(id=session_id, raw_transcript=transcript)
-        await persist_extraction_result(db, session_schema, brief)
-        await persist_demo_config(db, demo_config)
+    print(
+        f"Persisted to database as session {outcome.session_id} "
+        f"({outcome.chunk_count} chunks indexed)"
+    )
 
-        embedder = HashingEmbedder()
-        chunks = await ingest_transcript(session_id, transcript, embedder)
-        await persist_chunks(db, chunks)
-
-        await db.commit()
-
-    print(f"Persisted to database as session {session_id} ({len(chunks)} chunks indexed)")
-
-    if demo_config.status.value == "validated":
-        token = mint_share_token(str(session_id), settings.share_token_secret)
-        print(f"Demo link token: {token}")
-        print(f'  overture ask {token} "your question here"')
+    if outcome.demo_token:
+        print(f"Demo link token: {outcome.demo_token}")
+        print(f'  overture ask {outcome.demo_token} "your question here"')
 
 
 async def run_ask(token: str, question: str) -> None:

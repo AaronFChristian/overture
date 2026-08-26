@@ -53,6 +53,14 @@ class Settings(BaseSettings):
     # Application Insights connection string Terraform outputs.
     app_insights_connection_string: str | None = None
 
+    # --- SE console auth --------------------------------------------
+    # Unset by default -- when None, POST /api/v1/sessions/extract
+    # requires no auth at all, appropriate for solo local dev. Real
+    # Entra ID/MSAL is blocked by D-0036's confirmed SDSU tenant
+    # restriction; this shared-secret header is a deliberate
+    # placeholder, not an oversight -- see decisions.md D-0045.
+    console_shared_secret: str | None = None
+
     # --- Demo share tokens --------------------------------------------
     # See poc/tokens.py D-0022. The local dev default is intentionally
     # obviously-a-placeholder so nobody mistakes it for a real secret
