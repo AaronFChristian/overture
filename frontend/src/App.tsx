@@ -2,22 +2,33 @@ import { Link, Route, Routes } from "react-router-dom";
 import { ConsolePage } from "./pages/ConsolePage";
 import { DemoPage } from "./pages/DemoPage";
 
-function NoTokenLanding() {
+function Landing() {
   return (
-    <main className="page">
-      <h1>Overture</h1>
-      <p className="hint">
-        This is the demo runtime -- open a link an SE shared with you to see a specific demo, or{" "}
-        <Link to="/console">go to the console</Link> to generate one.
-      </p>
-    </main>
+    <div className="app-shell">
+      <nav className="topbar">
+        <span className="brand">Overture</span>
+      </nav>
+      <main className="page">
+        <header className="page-header">
+          <span className="eyebrow">Demo runtime</span>
+          <h1>Discovery transcript in, working demo out.</h1>
+          <p className="hint">
+            Open a link an SE shared with you to see a specific demo, or head to the console to
+            generate one from a transcript.
+          </p>
+        </header>
+        <Link to="/console" className="cta-link">
+          Open the SE console &rarr;
+        </Link>
+      </main>
+    </div>
   );
 }
 
 export function App() {
   return (
     <Routes>
-      <Route path="/" element={<NoTokenLanding />} />
+      <Route path="/" element={<Landing />} />
       <Route path="/console" element={<ConsolePage />} />
       <Route path="/demo/:token" element={<DemoPage />} />
     </Routes>

@@ -1,6 +1,22 @@
 # syntax=docker/dockerfile:1
 
-# --- Build stage --------------------------------------------------------
+# --- Frontend build stage -------------------------------------------------
+# Builds the React app with VITE_API_BASE_URL explicitly empty, so the
+# built bundle makes same-origin relative requests (/api/v1/...)
+# instead of pointing at localhost:8000 -- the frontend is served from
+# the SAME Container App as the API in production (D-0040's original
+# plan, only actually executed here). See decisions.md D-0047.
+FROM --platform=linux/amd64 node:22-slim AS frontend-builder
+
+WORKDIR /app/frontend
+
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+
+COPY frontend/ ./
+RUN VITE_API_BASE_URL= npm run build
+
+# --- Backend build stage --------------------------------------------------
 # uv installs into a venv here; only that venv gets copied into the
 # final stage, not uv itself or any build tooling.
 #
@@ -36,6 +52,11 @@ WORKDIR /app
 
 COPY --from=builder --chown=overture:overture /app/.venv /app/.venv
 COPY --from=builder --chown=overture:overture /app/src /app/src
+# Built frontend assets -- main.py checks whether this directory
+# exists at import time and only mounts static-file serving if it
+# does, so local `uvicorn --reload` (no built frontend present)
+# behaves exactly as before. See decisions.md D-0047.
+COPY --from=frontend-builder --chown=overture:overture /app/frontend/dist /app/src/overture/static
 
 USER overture
 ENV PATH="/app/.venv/bin:$PATH"

@@ -22,3 +22,12 @@ tests/
 
 Dockerfile
 .dockerignore
+
+# Frontend build stage runs its own `npm ci` fresh inside the
+# container -- copying the host's node_modules or a stale dist/ in
+# would be wrong (wrong platform, possibly stale) and just bloats the
+# build context for no benefit. Everything else under frontend/
+# (package.json, src/, index.html, configs) IS needed by the new
+# frontend build stage -- see decisions.md D-0047.
+frontend/node_modules/
+frontend/dist/

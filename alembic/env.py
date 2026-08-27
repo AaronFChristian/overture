@@ -17,7 +17,20 @@ if config.config_file_name is not None:
 
 # Pull the URL from our own Settings rather than alembic.ini, so there's
 # a single source of truth for the connection string (see D-0002).
-config.set_main_option("sqlalchemy.url", get_settings().database_url)
+#
+# Percent signs must be escaped as %% before this call: Alembic's
+# Config is backed by Python's configparser, whose default
+# interpolation treats a bare % as the start of a %(name)s reference
+# and raises ValueError on anything else. A URL-encoded password
+# (e.g. Terraform's generated Postgres password, which contains
+# %21, %23, etc. for special characters) looks exactly like malformed
+# interpolation syntax to configparser. This never surfaced locally
+# (docker-compose's password has no special characters) -- discovered
+# via a real failed `alembic upgrade head` against Azure, the first
+# time this project ever ran migrations against a
+# Terraform-generated password. Reproduced and the fix verified
+# directly (not assumed) before landing. See decisions.md D-0048.
+config.set_main_option("sqlalchemy.url", get_settings().database_url.replace("%", "%%"))
 
 target_metadata = Base.metadata
 

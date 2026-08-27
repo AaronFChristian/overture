@@ -1,6 +1,13 @@
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { ApiError, type ExtractResponse, extractSession } from "../api";
+import {
+  ApiError,
+  type ExtractResponse,
+  type PipelineStage,
+  extractSessionStreaming,
+  fetchPipelineStages,
+} from "../api";
+import { PipelineTimeline } from "../components/PipelineTimeline";
 
 type RunState =
   | { status: "idle" }
@@ -12,14 +19,42 @@ export function ConsolePage() {
   const [transcript, setTranscript] = useState("");
   const [consoleSecret, setConsoleSecret] = useState("");
   const [runState, setRunState] = useState<RunState>({ status: "idle" });
+  const [stages, setStages] = useState<PipelineStage[]>([]);
+  const [reached, setReached] = useState<string[]>([]);
+  const [activeDetail, setActiveDetail] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchPipelineStages()
+      .then((s) => {
+        if (!cancelled) setStages(s);
+      })
+      .catch(() => {
+        // Non-fatal: the timeline just won't pre-render its stages.
+        // Extraction itself still works, so this shouldn't block the UI.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     if (!transcript.trim() || runState.status === "running") return;
 
     setRunState({ status: "running" });
+    setReached([]);
+    setActiveDetail(null);
+
     try {
-      const result = await extractSession(transcript, consoleSecret || undefined);
+      const result = await extractSessionStreaming(
+        transcript,
+        consoleSecret || undefined,
+        (stage, detail) => {
+          setReached((prev) => (prev.includes(stage) ? prev : [...prev, stage]));
+          setActiveDetail(detail);
+        },
+      );
       setRunState({ status: "done", result });
     } catch (err) {
       const message = err instanceof ApiError ? err.message : "Something went wrong.";
@@ -28,41 +63,70 @@ export function ConsolePage() {
   }
 
   const running = runState.status === "running";
+  const showTimeline = running || runState.status === "done";
 
   return (
-    <main className="page">
-      <header className="demo-header">
-        <h1>Overture console</h1>
-        <p className="hint">
-          Paste a discovery-call transcript to extract requirements and generate a demo.
-        </p>
-      </header>
+    <div className="app-shell">
+      <nav className="topbar">
+        <Link to="/" className="brand">
+          Overture
+        </Link>
+        <span className="topbar-tag">SE Console</span>
+      </nav>
 
-      <form onSubmit={handleSubmit} className="console-form">
-        <textarea
-          value={transcript}
-          onChange={(e) => setTranscript(e.target.value)}
-          placeholder="Paste the transcript here..."
-          rows={12}
-          disabled={running}
-        />
-        <input
-          type="password"
-          value={consoleSecret}
-          onChange={(e) => setConsoleSecret(e.target.value)}
-          placeholder="Console secret (leave blank if not required)"
-          disabled={running}
-          className="console-secret-input"
-        />
-        <button type="submit" disabled={running || !transcript.trim()}>
-          {running ? "Extracting... this can take a minute" : "Extract"}
-        </button>
-      </form>
+      <main className="page">
+        <header className="page-header">
+          <h1>Generate a demo</h1>
+          <p className="hint">
+            Paste a discovery-call transcript. Overture extracts requirements, grounds every one in
+            a verbatim quote, and builds a working demo.
+          </p>
+        </header>
 
-      {runState.status === "error" && <p className="error">{runState.message}</p>}
+        <form onSubmit={handleSubmit} className="console-form">
+          <label className="field-label" htmlFor="transcript">
+            Transcript
+          </label>
+          <textarea
+            id="transcript"
+            value={transcript}
+            onChange={(e) => setTranscript(e.target.value)}
+            placeholder="Paste the discovery-call transcript here..."
+            rows={14}
+            disabled={running}
+          />
+          <div className="form-row">
+            <input
+              type="password"
+              value={consoleSecret}
+              onChange={(e) => setConsoleSecret(e.target.value)}
+              placeholder="Console secret (optional)"
+              disabled={running}
+              className="console-secret-input"
+            />
+            <button type="submit" disabled={running || !transcript.trim()}>
+              {running ? "Extracting..." : "Extract"}
+            </button>
+          </div>
+        </form>
 
-      {runState.status === "done" && <ExtractionResult result={runState.result} />}
-    </main>
+        {showTimeline && stages.length > 0 && (
+          <section className="panel">
+            <h2 className="panel-title">Pipeline</h2>
+            <PipelineTimeline
+              stages={stages}
+              reached={reached}
+              running={running}
+              activeDetail={activeDetail}
+            />
+          </section>
+        )}
+
+        {runState.status === "error" && <p className="error">{runState.message}</p>}
+
+        {runState.status === "done" && <ExtractionResult result={runState.result} />}
+      </main>
+    </div>
   );
 }
 
@@ -70,25 +134,29 @@ function ExtractionResult({ result }: { result: ExtractResponse }) {
   const totalRequirements = Object.values(result.requirement_counts).reduce((a, b) => a + b, 0);
 
   return (
-    <section className="extraction-result">
-      <h2>{result.blueprint_name}</h2>
-      <p>{result.summary}</p>
+    <section className="panel">
+      <div className="result-header">
+        <div>
+          <span className="eyebrow">Selected blueprint</span>
+          <h2 className="panel-title">{result.blueprint_name}</h2>
+        </div>
+        <span className={`status-pill status-pill--${result.config_status}`}>
+          {result.config_status}
+        </span>
+      </div>
 
-      <dl className="stat-grid">
-        <dt>Requirements extracted</dt>
-        <dd>{totalRequirements}</dd>
-        <dt>In scope</dt>
-        <dd>{result.scope_counts.in_scope ?? 0}</dd>
-        <dt>Out of scope</dt>
-        <dd>{result.scope_counts.out_of_scope ?? 0}</dd>
-        <dt>Needs clarification</dt>
-        <dd>{result.scope_counts.needs_clarification ?? 0}</dd>
-        <dt>Chunks indexed</dt>
-        <dd>{result.chunks_indexed}</dd>
-      </dl>
+      <p className="result-summary">{result.summary}</p>
 
-      <p>
-        Config status: <strong>{result.config_status}</strong>
+      <div className="stat-row">
+        <Stat label="Items extracted" value={totalRequirements} />
+        <Stat label="In scope" value={result.scope_counts.in_scope ?? 0} />
+        <Stat label="Out of scope" value={result.scope_counts.out_of_scope ?? 0} />
+        <Stat label="Needs clarification" value={result.scope_counts.needs_clarification ?? 0} />
+        <Stat label="Chunks indexed" value={result.chunks_indexed} />
+      </div>
+
+      <p className="session-id">
+        Session <code>{result.session_id}</code>
       </p>
 
       {result.validation_errors.length > 0 && (
@@ -103,12 +171,19 @@ function ExtractionResult({ result }: { result: ExtractResponse }) {
       )}
 
       {result.demo_token && (
-        <p>
-          <Link to={`/demo/${result.demo_token}`} className="demo-link">
-            Open the demo &rarr;
-          </Link>
-        </p>
+        <Link to={`/demo/${result.demo_token}`} className="cta-link">
+          Open the generated demo &rarr;
+        </Link>
       )}
     </section>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="stat">
+      <span className="stat-value">{value}</span>
+      <span className="stat-label">{label}</span>
+    </div>
   );
 }

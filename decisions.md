@@ -1720,3 +1720,193 @@ Revisit:  Not expected to change. If a third caller ever needs this
           pipeline (a batch-processing script, say), it becomes a
           third caller of the same function, not a reason to
           restructure.
+
+---
+
+## D-0047 — frontend baked into the same Docker image, served by FastAPI
+
+Date: 2026-08-27 · Session 11 · Status: accepted, verified locally
+
+Context:  D-0040 (session 9) always planned for the frontend and
+          backend to share one Container App in production, but that
+          plan was never actually executed -- every deploy through
+          session 10 only ever containerized `src/`. Aaron wanted a
+          real, live Azure URL to record a demo against, which meant
+          this had to actually happen.
+Decision: The Dockerfile gained a new first stage that builds the
+          frontend with `VITE_API_BASE_URL=` (empty, so the built
+          bundle makes same-origin relative requests) and copies the
+          output into the Python runtime stage as
+          `src/overture/static/`. `main.py` checks whether that
+          directory exists at import time; if it does, it mounts
+          `/assets` and adds a catch-all route serving `index.html`
+          for anything else, registered AFTER every API router so
+          Starlette's route-priority-by-registration-order means
+          `/health` and `/api/v1/...` always win. If the directory
+          doesn't exist (every local dev run), this whole block is
+          skipped and nothing changes from before.
+Why:      This is the same "local dev must never require the
+          production artifact" discipline this project has held to
+          since session 8's OTel gating (`if
+          settings.app_insights_connection_string`) and session 9's
+          CORS gating (`if settings.environment == "local"`) --
+          existence-checking a directory is the analogous gate for a
+          build-time artifact instead of a config value. Verified
+          directly, not assumed: built the frontend locally with the
+          production flag, placed it exactly where the Dockerfile
+          would, and ran a real TestClient against it -- confirming
+          API routes aren't shadowed by the catch-all, and that
+          React Router's client-side routes (`/console`,
+          `/demo/:token`) correctly serve the SPA shell on what would
+          otherwise be a fresh page load or a browser refresh, not
+          just in-app navigation.
+Rejected: A separate Azure Static Web App for the frontend -- a
+          reasonable production pattern, and arguably a nice
+          additional Azure service to showcase, but it adds a second
+          deploy target, a second CORS surface, and a second thing
+          that can drift out of sync with the backend for a
+          single-operator portfolio project that doesn't need that
+          separation. One container, one URL, matches this project's
+          minimum-resources principle (D-0021, D-0033) applied to
+          deployment topology.
+Revisit:  If this project ever needs independent scaling or deploy
+          cadence for the frontend versus the backend, split them --
+          not before there's a real reason to.
+
+---
+
+## D-0048 — Alembic's Config chokes on URL-encoded passwords; fixed with a %% escape, proven both ways
+
+Date: 2026-08-27 · Session 11 (post-hoc, found via Aaron's first real Azure migration attempt) · Status: fixed and verified
+
+Context:  `alembic upgrade head` against the real Azure Postgres
+          database failed immediately with `ValueError: invalid
+          interpolation syntax`, before ever attempting a connection.
+          This was the first time in the project's history that
+          Alembic had run against a password containing URL-encoded
+          special characters -- local dev's docker-compose password
+          (`overture:overture`, D-0004) has none, and no earlier
+          session had ever run `alembic upgrade head` directly
+          against the Terraform-generated Azure password. Root cause:
+          `alembic/env.py` passes the database URL to Alembic's
+          `Config.set_main_option`, which is backed by Python's
+          `configparser`. `configparser`'s default interpolation
+          treats a bare `%` as the start of a `%(name)s` reference
+          and raises on anything else -- and a URL-encoded password
+          (`%21`, `%23`, `%25`, etc., from Terraform's `urlencode()`
+          call in `keyvault.tf`) is exactly that shape.
+Decision: `env.py` now escapes every `%` as `%%` before calling
+          `set_main_option`. Reproduced the exact error against a
+          synthetic URL matching the real password's shape first,
+          confirmed the fix resolves it, and confirmed the escaped
+          value round-trips back to the *original* unescaped URL when
+          read back via `get_main_option` -- all three checks run
+          directly, not assumed.
+Why:      `%%` is the documented `configparser` escape for a literal
+          percent sign; this isn't a workaround, it's the correct
+          fix for exactly this class of value. Verifying the
+          round-trip specifically matters because a fix that merely
+          silences the `ValueError` without preserving the real
+          password would have produced a new, quieter failure
+          (a connection attempt with a corrupted password) instead of
+          a loud one -- the round-trip check is what rules that out.
+Rejected: Percent-encoding a Postgres URL differently at generation
+          time to avoid `%` characters entirely -- would only move the
+          problem (any password with `!`, `#`, `=`, or other
+          non-alphanumeric characters needs *some* URL-encoding to be
+          a valid connection string at all); fixing the actual
+          consumer of the value is more robust than trying to avoid
+          triggering it.
+Revisit:  Not expected to change. If Alembic's `Config` internals
+          ever stop using `configparser`, re-verify this escape is
+          still necessary.
+
+---
+
+## D-0049 — pipeline progress streamed via SSE, with an optional callback rather than threading through LangGraph
+
+Date: 2026-08-27 · Session 12 · Status: backend built and verified; Azure ingress behavior unverified
+
+Context:  Aaron wanted the console to show what the backend is
+          actually doing during an extraction -- which stage it's on,
+          in real time -- both as a genuine UX improvement and
+          because a Loom demo where a button sits frozen for 60
+          seconds shows nothing about the system's actual
+          sophistication.
+Decision: `run_extraction_pipeline` gained an optional
+          `on_progress: ProgressCallback | None` parameter, defaulting
+          to `None`. A new `POST /api/v1/sessions/extract/stream`
+          route runs the pipeline as an asyncio task while yielding
+          Server-Sent Events from a queue the callback writes to. The
+          canonical stage list lives in `PIPELINE_STAGES` in
+          orchestration.py and is served to the frontend via
+          `GET /api/v1/sessions/stages`, so the timeline the UI
+          renders and the stages the pipeline actually emits cannot
+          desync. The original non-streaming `/extract` route is
+          unchanged and still passes no callback -- as does the CLI.
+Why:      Optional-by-default means the CLI, the existing route, and
+          all 75 existing tests are completely unaffected -- the same
+          gating discipline as D-0044's CORS and D-0047's static
+          files. The queue exists because the pipeline is a plain
+          async function, not a generator: it can't `yield` to the
+          HTTP response directly, so the queue is what bridges
+          "callback fires mid-pipeline" to "generator yields to the
+          client."
+Rejected: Threading a progress callback down into every LangGraph
+          node to emit truly per-node events -- meaningfully more
+          invasive (every node signature changes, the graph's state
+          shape changes) for finer granularity than a 5-minute demo
+          needs. The current approach emits `extract` and `classify`
+          before invoking the graph, which is honest about what's
+          about to happen but does NOT reflect the moment each
+          internally completes -- a real limitation, named here
+          rather than glossed over.
+Revisit:  **Streaming through Azure Container Apps' ingress is
+          completely unverified.** Proxies commonly buffer responses,
+          which would defeat streaming entirely -- the browser would
+          receive every event at once, at the end. `X-Accel-Buffering:
+          no` and `Cache-Control: no-cache` are set as the standard
+          mitigation, but whether Azure's ingress honors them is
+          unknown until a real deploy tests it. If streaming arrives
+          all-at-once in the deployed app, that's the cause, and the
+          fallback is the existing non-streaming `/extract` route.
+
+---
+
+## D-0050 — SSE consumed via fetch + stream reader, not EventSource; demo-page stages are timed, not streamed
+
+Date: 2026-08-27 · Session 12 · Status: accepted, verified by build
+
+Context:  Two separate "show what's happening" surfaces were needed:
+          the console's extraction pipeline (slow, many stages) and
+          the demo page's question-answering (fast, three stages).
+Decision: (a) The console consumes the SSE stream using `fetch` plus a
+          manual `ReadableStream` reader, NOT the browser's built-in
+          `EventSource` API. (b) The demo page's retrieval stages are
+          advanced on a local timer rather than streamed from the
+          backend.
+Why:      (a) `EventSource` can only issue GET requests, and cannot
+          send a request body or custom headers -- this endpoint needs
+          both (the transcript itself, plus the optional
+          `X-Console-Secret`). Manual parsing costs ~30 lines and
+          removes that constraint entirely. (b) The ask path takes a
+          few seconds and has three fixed stages; wiring a second
+          streaming endpoint for it would roughly double the
+          streaming surface area (and its untested-through-Azure
+          risk, D-0049) for a much smaller payoff. The stage labels
+          describe what the backend genuinely does -- embed via the
+          256-dim hashing embedder, cosine search in pgvector,
+          grounded generation -- but the *timing* is indicative
+          rather than measured, and the code comment says so
+          explicitly rather than letting a reader assume otherwise.
+Rejected: Streaming the ask path too -- deferred, not dismissed; if
+          D-0049's Azure ingress question resolves cleanly, this
+          becomes a straightforward follow-up. Faking extraction
+          progress on a timer as well -- rejected outright: the
+          extraction pipeline's stages take genuinely variable time
+          (LLM calls), so a timer would routinely show the wrong
+          stage, which is worse than showing nothing.
+Revisit:  If the demo page's ask latency ever becomes highly variable
+          (a much larger corpus, a slower model), the timer stops
+          being a reasonable approximation and should be replaced
+          with real streaming.
